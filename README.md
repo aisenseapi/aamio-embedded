@@ -3,9 +3,14 @@
 The parts of aamio that are easy to get subtly wrong, in C, for devices that
 have a few hundred kilobytes and no room to be careless.
 
-**Status: the protocol core is written and passes the shared vectors. No board
-has run it.** Everything below about ESP32 memory is arithmetic against
-measured numbers, not a measurement on hardware. Nobody has flashed this.
+**Status: the C core has been built, flashed to an ESP32 board and run against
+the live service.** Nothing on it is timed. Everything below about ESP32 memory
+is arithmetic against numbers measured on a host build, not a measurement on the
+device.
+
+There is a Python module beside it, in `python/`, for MicroPython and
+CircuitPython. It passes the same vectors and reads the live service, and it has
+**not** been run on a board.
 
 ## What it is, and what it deliberately is not
 
@@ -147,8 +152,20 @@ says, over TLS, against aamio.at.
 
 That is what is claimed, and no more.
 
+## The same thing in Python
+
+`python/` holds the protocol for boards that run MicroPython or CircuitPython:
+three files copied over USB, no package and no dependency beyond `hashlib` and
+`json`. It makes the same addresses, signs the same ninety-four bytes, refuses
+the same spellings, and carries the same read session. A C module for these
+runtimes would mean building custom firmware or forking one, which almost nobody
+does; the protocol work is one sha256 per read, so there is nothing to win back
+by it. `python/README.md` says what it does and what it leaves to the platform.
+
 ## What has not been done
 
+- The Python module has not run on a board. It passes the shared vectors and
+  reads the live service from a desktop, and that is all that is claimed for it.
 - Nothing is timed. No TLS handshake measured, no certificate chain checked by
   hand on device, no proof of work timed.
 - A signed write from the board is not claimed here. The example constructs one

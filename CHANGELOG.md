@@ -2,6 +2,31 @@
 
 aamio-embedded ships from git and carries no version of its own; entries are dated.
 
+## 2026-09-20, the same protocol in Python
+
+- `python/` carries the protocol for MicroPython and CircuitPython: three files
+  copied to a board, no package and no dependency past `hashlib` and `json`. Same
+  addresses, same ninety-four signed bytes, same refusals, same read session with
+  its cursor and its byte budget. A C module for those runtimes means building
+  custom firmware or forking one, and the protocol work is a sha256 per read.
+- `body_of` hands over a payload only after checking it against the hash that came
+  with it, and `sender_is_allowed` raises without a verifier rather than answering:
+  neither runtime has Ed25519, and a sender check that cannot check is worse than
+  none because it looks like one.
+- A read sends a byte budget whether or not the caller thought about one. Fifty
+  messages is a legal answer and can be megabytes, which on a board is an
+  allocation failure in the middle of a parse.
+- The suite refuses what runs on a desktop and not on a device -- an f-string, a
+  three-argument `getattr`, an import neither runtime has. The tests run on CPython,
+  which is the one place that check cannot come for free.
+- Checked against the shared vectors and against the live service over TLS, from a
+  desktop. **The Python module has not run on a board**, and the README says so in
+  the same breath as it says the C has.
+- The README said both: a status line at the top from before the flash saying no
+  board had run it, and a section two screens down saying one had. A file that
+  contradicts itself is worse than either claim, because a reader believes
+  whichever they saw first.
+
 ## 2026-09-20, it ran on a board
 
 - The ESP-IDF sensor example was built, flashed to an ESP32 board and run against
