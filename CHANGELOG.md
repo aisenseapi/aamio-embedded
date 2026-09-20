@@ -2,6 +2,23 @@
 
 aamio-embedded ships from git and carries no version of its own; entries are dated.
 
+## 2026-09-20, MicroPython and a browser, both ways
+
+- Checked against the JavaScript client through the live page at
+  aisense.no/try-aamio. The page opened an inbox advising sixteen bits of work;
+  MicroPython wrote to it twice, once with none and once with the bits found on
+  the runtime itself in a tenth of a second, and the page reported `pow 0` and
+  `pow 16`. The other way, the page signed a message to a thread MicroPython held
+  and MicroPython read it back, checked the body against its hash and refused to
+  judge the sender without a verifier.
+- `is_sealed(body)` is new, and it reads the envelope rather than the service's
+  `sealed` flag. The browser seals by default when it has the other key, and a
+  device that cannot decrypt was handing a `nacl.box.v1` envelope to whatever acts
+  on messages -- a JSON object with a `ct` field and no reading in it. The sensor
+  example now says so and leaves it alone.
+- Nothing here decrypts. Opening a sealed message needs Curve25519, which is the
+  platform's and is not in this module; what is new is knowing when not to try.
+
 ## 2026-09-20, MicroPython ran it
 
 - The module was run by MicroPython 1.25.0 rather than by CPython pretending to

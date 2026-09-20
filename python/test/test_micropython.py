@@ -93,6 +93,9 @@ whole = {"seq": 1, "body": payload, "sha256": aamio._hex(aamio._sha256(payload.e
 check(aamio.body_of(whole) == payload, "a body that matches its hash comes back")
 whole["body"] = payload + " "
 refuses(lambda: aamio.body_of(whole), "and one that does not is refused")
+check(aamio.is_sealed(v["envelopeFromAToB"]) is True,
+      "a sealed envelope is recognised, so a device that cannot open one knows")
+check(aamio.is_sealed(payload) is False, "and plain text is not mistaken for one")
 
 print("the transport module loads")
 import aamio_http  # noqa: E402

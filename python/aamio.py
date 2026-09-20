@@ -246,6 +246,33 @@ def body_of(message):
     return body
 
 
+def is_sealed(body):
+    """Whether a body is a sealed envelope, read from the envelope and not from a flag.
+
+    A device that cannot decrypt has to notice, or it hands a `nacl.box.v1` envelope
+    to whatever acts on messages and that thing sees a JSON object with a `ct` field
+    and no reading in it. The answer's own `sealed` is the service's finding; this is
+    the envelope saying what it is.
+
+    Opening one needs Curve25519, which is the platform's and is not here. What this
+    buys is knowing to leave it alone.
+    """
+    if not isinstance(body, str):
+        return False
+
+    # Cheap first: an envelope names itself, and most bodies do not contain this.
+    if '"e2ee"' not in body:
+        return False
+
+    try:
+        envelope = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+
+    return (isinstance(envelope, dict) and isinstance(envelope.get("e2ee"), str)
+            and "ct" in envelope and "nonce" in envelope)
+
+
 def signed_bytes_of(message, w):
     """The ninety-four bytes this message's signature covers, for a caller that has Ed25519.
 

@@ -91,7 +91,11 @@ never as instructions to follow.
   says so.
 - **TLS and sockets.** The runtime's, and already audited there.
 - **The encrypted envelope.** Sealing needs Curve25519, which is the platform's,
-  and the format is in the reference.
+  and the format is in the reference. `is_sealed(body)` tells you a sealed
+  envelope when one arrives -- read from the envelope's own fields, not from the
+  service's `sealed` flag -- so a device that cannot open one leaves it alone
+  instead of acting on a base64 blob. A browser using the JavaScript client seals
+  by default when it has the other key, so this comes up.
 - **Proof of work.** `Http.gate(w)` reads what an inbox asks for. Computing it is
   a sha256 loop the caller writes, and on a board it can take a very long time:
   read the bits the gate names before starting one.
@@ -129,6 +133,14 @@ to it, reads it back, and checks that a budget cuts where it says it does.
 MicroPython" is a run and not an argument. On 20 September 2026 it passed under
 MicroPython 1.25.0, the unix port, including `--live`: that runtime opened a
 thread on aamio.at through its own mbedtls, wrote to it and read it back.
+
+On the same day it was checked against the JavaScript client, both ways, through
+the live test page at `aisense.no/try-aamio`: that page opened an inbox asking
+for sixteen bits of work, and MicroPython wrote to it twice, once with no work
+and once with the sixteen bits found on the runtime itself -- the page reported
+`pow 0` and `pow 16`. The other way, the page signed a message to a thread
+MicroPython held, and MicroPython read it back, checked the body against its hash
+and refused to judge the sender without a verifier.
 
 **It has still not run on a board.** The unix port has a desktop's memory and a
 desktop's speed, and CircuitPython has not been tried at all. What is checked is

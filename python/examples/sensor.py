@@ -65,6 +65,13 @@ def act(message):
         print("message %s does not match its own hash: %s" % (message.get("seq"), wrong))
         return
 
+    if aamio.is_sealed(body):
+        # Sealed to a key this device does not have. Opening it needs Curve25519,
+        # which is the platform's and is not in this module. Acting on the
+        # envelope instead would be acting on a base64 blob.
+        print("message %s is sealed and this device cannot open it" % message.get("seq"))
+        return
+
     print("message", message.get("seq"), body[:60])
 
 

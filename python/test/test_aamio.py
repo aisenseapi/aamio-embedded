@@ -110,6 +110,11 @@ refuses(lambda: aamio.body_of(dict(whole, body=payload + " ")),
 refuses(lambda: aamio.body_of({"seq": 1, "body": payload}),
         "and a message with no hash at all cannot be checked, so it is refused",
         aamio.EncodingError)
+check(aamio.is_sealed(v["envelopeFromAToB"]) is True,
+      "a sealed envelope says what it is, without asking the service")
+check(aamio.is_sealed(payload) is False, "and plain text does not")
+check(aamio.is_sealed('{"e2ee":"nacl.box.v1"}') is False,
+      "nor does an object that names the format and carries no ciphertext")
 check(aamio.signed_bytes_of(whole, v["w"]) == aamio.sign_input(v["w"], payload),
       "the bytes a message's signature covers are the same ninety-four")
 refuses(lambda: aamio.sender_is_allowed(whole, v["w"], [v["a"]["public"]], None),
