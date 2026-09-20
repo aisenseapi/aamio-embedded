@@ -189,6 +189,14 @@ int aamio_session_take_answer(aamio_session *session, const char *json, size_t l
         }
     }
 
+    /* A cursor this client cannot represent is not a cursor. Believing the rest of
+     * the answer while quietly ignoring next is how a reader ends up at a position
+     * nobody chose: the whole answer is refused instead. */
+    if (aamio_json_field(json, len, "next", &value, &value_len) == AAMIO_OK
+        && aamio_json_number(json, len, "next", &next) != AAMIO_OK) {
+        return AAMIO_E_ENCODING;
+    }
+
     if (aamio_json_number(json, len, "next", &next) == AAMIO_OK && next > session->after) {
         session->after = next;
     } else if (aamio_json_field(json, len, "reset", &value, &value_len) == AAMIO_OK) {

@@ -136,6 +136,12 @@ int main(void)
             "{\"messages\":[{\"seq\":5}],\"next\":5}",
             "{\"exists\":\"maybe\",\"messages\":[],\"next\":9}",
             "{\"exists\":true,\"messages\":[]} trailing",
+            /* Balanced is not a grammar, and a long can wrap. All four moved the
+             * cursor until 20 September; the last moved it to 1661992959. */
+            "{\"exists\":true,\"messages\":[],\"next\":9,}",
+            "{\"exists\":true,\"messages\":[],,\"next\":9}",
+            "{\"exists\":true \"messages\":[] \"next\":9}",
+            "{\"exists\":true,\"messages\":[],\"next\":99999999999999999999}",
         };
         size_t which;
         int refused = 0;

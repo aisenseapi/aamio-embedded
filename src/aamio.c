@@ -511,12 +511,20 @@ int aamio_json_field(const char *json, size_t len, const char *name,
     return AAMIO_E_ARG;
 }
 
+/* Where the walk is, so a separator can be judged by what came before it. */
+#define AT_START 0
+#define AT_OPEN  1
+#define AT_VALUE 2
+#define AT_COMMA 3
+#define AT_COLON 4
+
 int aamio_json_whole(const char *json, size_t len)
 {
     size_t i = 0;
     int depth = 0;
     int in_string = 0;
     int closed = 0;
+    int was = AT_START;
 
     if (json == NULL || len == 0) {
         return AAMIO_E_ARG;
@@ -548,11 +556,32 @@ int aamio_json_whole(const char *json, size_t len)
             return AAMIO_E_ENCODING;
         }
 
+        if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+            continue;
+        }
+
+        /* Balanced brackets are not a grammar. A trailing comma, a double comma and
+         * two names with no comma between them were all balanced, and all three moved
+         * the cursor. What may follow what is checked here, in five states. */
         if (c == '\"') {
+            if (was != AT_START && was != AT_OPEN && was != AT_COMMA && was != AT_COLON) {
+                return AAMIO_E_ENCODING;
+            }
+
             in_string = 1;
+            was = AT_VALUE;
         } else if (c == '{' || c == '[') {
+            if (was != AT_START && was != AT_OPEN && was != AT_COMMA && was != AT_COLON) {
+                return AAMIO_E_ENCODING;
+            }
+
             depth++;
+            was = AT_OPEN;
         } else if (c == '}' || c == ']') {
+            if (was == AT_COMMA || was == AT_COLON) {
+                return AAMIO_E_ENCODING;
+            }
+
             depth--;
 
             if (depth < 0) {
@@ -561,6 +590,28 @@ int aamio_json_whole(const char *json, size_t len)
 
             if (depth == 0) {
                 closed = 1;
+            }
+
+            was = AT_VALUE;
+        } else if (c == ',') {
+            if (was != AT_VALUE) {
+                return AAMIO_E_ENCODING;
+            }
+
+            was = AT_COMMA;
+        } else if (c == ':') {
+            if (was != AT_VALUE) {
+                return AAMIO_E_ENCODING;
+            }
+
+            was = AT_COLON;
+        } else {
+            /* A number or a literal. Its first character has to stand where a value
+             * may; the rest of it runs on without changing the state. */
+            if (was == AT_OPEN || was == AT_COMMA || was == AT_COLON) {
+                was = AT_VALUE;
+            } else if (was != AT_VALUE) {
+                return AAMIO_E_ENCODING;
             }
         }
     }
@@ -598,6 +649,13 @@ int aamio_json_number(const char *json, size_t len, const char *name, long *out)
 
     for (; i < value_len; i++) {
         if (value[i] < '0' || value[i] > '9') {
+            return AAMIO_E_ENCODING;
+        }
+
+        /* A cursor is a number the caller acts on. 99999999999999999999 wrapped a
+         * long and moved the cursor to 1661992959: undefined behaviour, and a
+         * position nobody chose. Refused rather than wrapped. */
+        if (total > (2147483647L - (value[i] - '0')) / 10) {
             return AAMIO_E_ENCODING;
         }
 

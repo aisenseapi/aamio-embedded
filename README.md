@@ -29,7 +29,7 @@ Built with `gcc -Os` for x86-64:
 
 | | |
 |---|---|
-| Code | 3472 bytes |
+| Code | 4064 bytes |
 | Initialised data, bss | 0, 0 |
 | Heap | none, ever |
 | Deepest stack | about 640 bytes, in sha256 |
@@ -40,8 +40,8 @@ its size, and nothing is written to it on failure.
 ## What it passes
 
 `testdata/vectors.json` is the same file six of the seven aamio clients carry
-byte for byte, sha256 `342ea401…`. Forty-six checks in two suites, twenty-nine
-through the core and seventeen through the sensor loop, all with
+byte for byte, sha256 `342ea401…`. Forty-nine checks in two suites, twenty-nine
+through the core and twenty through the sensor loop, all with
 `-Wall -Wextra -Werror`:
 
 ```
