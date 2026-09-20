@@ -118,6 +118,55 @@ int main(void)
               "a reset hands back a lower cursor, and it is taken rather than ignored", NULL);
     }
 
+
+    /* An answer that is not one. Found by a Codex review on 20 September, hours
+     * after this was written: "not JSON" read as an empty success, a body cut off
+     * by a full buffer read as "nothing more, sleep", and {"next":10} moved the
+     * cursor from 4 to 10 and stepped over messages that were never delivered.
+     * That last one is silent loss. Nothing is believed from a document that is
+     * not complete, and a refused answer leaves the session exactly as it was. */
+    {
+        static const char *const rubbish[] = {
+            "not JSON",
+            "",
+            "{\"next\":10}",
+            "{\"messages\":[{\"seq\":1}],\"next\":1",
+            "{\"exists\":true,\"messages\":[{\"body\":\"half",
+            "{\"exists\":true,\"messages\":7,\"next\":9}",
+            "{\"messages\":[{\"seq\":5}],\"next\":5}",
+            "{\"exists\":\"maybe\",\"messages\":[],\"next\":9}",
+            "{\"exists\":true,\"messages\":[]} trailing",
+        };
+        size_t which;
+        int refused = 0;
+        int moved = 0;
+        long before = session.after;
+
+        for (which = 0; which < sizeof rubbish / sizeof rubbish[0]; which++) {
+            if (aamio_session_take_answer(&session, rubbish[which], strlen(rubbish[which])) < 0) {
+                refused++;
+            }
+
+            if (session.after != before) {
+                moved++;
+            }
+        }
+
+        check(refused == (int) (sizeof rubbish / sizeof rubbish[0]),
+              "every answer that is not a whole one is refused", NULL);
+        check(moved == 0, "and none of them moves the cursor past a message nobody read", NULL);
+    }
+
+    /* And a whole one is still taken, after all that. */
+    {
+        static const char answer[] =
+            "{\"w\":\"ohcibx4t22xc6hx22fch\",\"exists\":true,"
+            "\"messages\":[{\"seq\":9}],\"next\":9,\"waited\":0}";
+
+        check(aamio_session_take_answer(&session, answer, sizeof answer - 1) == 1
+              && session.after == 9, "and a whole answer is still taken", NULL);
+    }
+
     printf("\n%d checks, %d failed\n", checks, failures);
 
     return failures == 0 ? 0 : 1;

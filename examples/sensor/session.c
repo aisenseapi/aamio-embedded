@@ -121,6 +121,41 @@ int aamio_session_take_answer(aamio_session *session, const char *json, size_t l
         return AAMIO_E_ARG;
     }
 
+    /* Checked whole before anything here is believed. A body cut off by a full
+     * buffer reads fine as far as it goes, and its fields moved the cursor past
+     * messages that never arrived. On a bad answer the session is left exactly as
+     * it was, so the next read asks for the same thing again.
+     *
+     * exists is required as well: an answer without it is not this service's, and
+     * a stray object with next in it used to be enough to move the cursor.
+     */
+    if (aamio_json_whole(json, len) != AAMIO_OK) {
+        return AAMIO_E_ENCODING;
+    }
+
+    if (aamio_json_field(json, len, "exists", &value, &value_len) != AAMIO_OK) {
+        return AAMIO_E_ENCODING;
+    }
+
+    if (!(value_len == 4 && memcmp(value, "true", 4) == 0)
+        && !(value_len == 5 && memcmp(value, "false", 5) == 0)) {
+        return AAMIO_E_ENCODING;
+    }
+
+    /* A required field has a shape as well as a name. messages as a number is
+     * well formed JSON and not an answer, and it was enough to move the cursor.
+     * The check runs only where messages is expected: an answer that says the
+     * thread is gone carries none. */
+    if (value_len == 4) {
+        const char *listed = NULL;
+        size_t listed_len = 0;
+
+        if (aamio_json_field(json, len, "messages", &listed, &listed_len) != AAMIO_OK
+            || listed_len == 0 || listed[0] != '[') {
+            return AAMIO_E_ENCODING;
+        }
+    }
+
     session->more = 0;
     session->left_unread = 0;
     session->left_bytes = 0;
@@ -128,8 +163,7 @@ int aamio_session_take_answer(aamio_session *session, const char *json, size_t l
     /* exists: false is a thread nobody has written to yet, one that expired
      * and was swept, or one a restart took away. The cursor stays where it is:
      * a write opens a new thread here and it counts from one again. */
-    if (aamio_json_field(json, len, "exists", &value, &value_len) == AAMIO_OK
-        && value_len == 5 && memcmp(value, "false", 5) == 0) {
+    if (value_len == 5 && memcmp(value, "false", 5) == 0) {
         session->gone = 1;
 
         return 0;

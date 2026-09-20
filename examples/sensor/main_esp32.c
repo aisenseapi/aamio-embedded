@@ -44,7 +44,10 @@
  * reading comes back in about 360 bytes, an empty read in 144. */
 #define READ_LIMIT      "1"
 #define READ_MAX_BYTES  "2000"
-#define ANSWER_MAX      1024
+/* Bigger than the budget above, and by more than the envelope: X-Max-Bytes bounds
+ * the messages, not the whole body, so metadata and separators come on top. Asking
+ * for 2000 bytes into 1024 threw the rest away and read as an ordinary short answer. */
+#define ANSWER_MAX      3072
 
 /* The reply inbox this device reads. Derived from a read key it keeps; see the
  * note about NVS above. */
@@ -55,6 +58,8 @@ static aamio_session session;
 static unsigned char public_key[crypto_sign_PUBLICKEYBYTES];
 static unsigned char secret_key[crypto_sign_SECRETKEYBYTES];
 
+static int overflowed;
+
 static esp_err_t collect(esp_http_client_event_t *event)
 {
     static int wrote;
@@ -64,16 +69,21 @@ static esp_err_t collect(esp_http_client_event_t *event)
         int room = ANSWER_MAX - 1 - wrote;
         int take = event->data_len < room ? event->data_len : room;
 
+        if (take < event->data_len) {
+            /* More than the buffer holds. A truncated body is still valid JSON for as
+             * far as it goes, so it is refused here: read as an answer it says nothing
+             * arrived, and the device sleeps on a full inbox. */
+            overflowed = 1;
+        }
+
         if (take > 0) {
             memcpy(into + wrote, event->data, (size_t) take);
             wrote += take;
             into[wrote] = '\0';
         }
-        /* What did not fit is dropped here and the answer is short: the point
-         * of X-Max-Bytes is that this should not happen. If it does, the
-         * budget is wrong, not the buffer. */
     } else if (event->event_id == HTTP_EVENT_ON_CONNECTED) {
         wrote = 0;
+        overflowed = 0;
     }
 
     return ESP_OK;
@@ -166,6 +176,14 @@ static int read_inbox(char *answer)
     problem = esp_http_client_perform(client);
     status = problem == ESP_OK ? esp_http_client_get_status_code(client) : 0;
     esp_http_client_cleanup(client);
+
+    if (overflowed) {
+        /* Never a quiet short read. Lower X-Max-Bytes or raise ANSWER_MAX; both are
+         * decisions, and a dropped tail is not. */
+        ESP_LOGE(TAG, "the answer did not fit in %d bytes; nothing from it is believed", ANSWER_MAX);
+
+        return -1;
+    }
 
     return status;
 }

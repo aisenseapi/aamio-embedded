@@ -511,6 +511,65 @@ int aamio_json_field(const char *json, size_t len, const char *name,
     return AAMIO_E_ARG;
 }
 
+int aamio_json_whole(const char *json, size_t len)
+{
+    size_t i = 0;
+    int depth = 0;
+    int in_string = 0;
+    int closed = 0;
+
+    if (json == NULL || len == 0) {
+        return AAMIO_E_ARG;
+    }
+
+    while (i < len && (json[i] == ' ' || json[i] == '\n' || json[i] == '\r' || json[i] == '\t')) {
+        i++;
+    }
+
+    if (i >= len || json[i] != '{') {
+        return AAMIO_E_ENCODING;
+    }
+
+    for (; i < len; i++) {
+        char c = json[i];
+
+        if (in_string) {
+            if (c == '\\') {
+                i++;
+            } else if (c == '\"') {
+                in_string = 0;
+            }
+
+            continue;
+        }
+
+        if (closed && c != ' ' && c != '\n' && c != '\r' && c != '\t') {
+            /* Something after the object. Not one answer. */
+            return AAMIO_E_ENCODING;
+        }
+
+        if (c == '\"') {
+            in_string = 1;
+        } else if (c == '{' || c == '[') {
+            depth++;
+        } else if (c == '}' || c == ']') {
+            depth--;
+
+            if (depth < 0) {
+                return AAMIO_E_ENCODING;
+            }
+
+            if (depth == 0) {
+                closed = 1;
+            }
+        }
+    }
+
+    /* An unterminated string, or a body that stopped before its last brace: both are
+     * what a truncated answer looks like, and both used to be read as an answer. */
+    return (in_string || depth != 0 || !closed) ? AAMIO_E_ENCODING : AAMIO_OK;
+}
+
 int aamio_json_number(const char *json, size_t len, const char *name, long *out)
 {
     const char *value = NULL;

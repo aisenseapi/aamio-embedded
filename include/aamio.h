@@ -111,6 +111,13 @@ int aamio_json_field(const char *json, size_t len, const char *name,
 /* The same, for a whole number. */
 int aamio_json_number(const char *json, size_t len, const char *name, long *out);
 
+/* Is this one complete JSON object and nothing else?
+ *
+ * A body cut off by a full buffer or a dropped connection looks like an answer for as
+ * far as it goes, and the fields before the cut read fine. Believing those moved a
+ * cursor past messages that were never delivered. Check first, believe after. */
+int aamio_json_whole(const char *json, size_t len);
+
 #ifdef __cplusplus
 }
 #endif
