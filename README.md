@@ -9,8 +9,8 @@ is arithmetic against numbers measured on a host build, not a measurement on the
 device.
 
 There is a Python module beside it, in `python/`, for MicroPython and
-CircuitPython. It passes the same vectors and reads the live service, and it has
-**not** been run on a board.
+CircuitPython. MicroPython 1.25.0 runs it and reads the live service through its
+own TLS, and it has **not** been run on a board.
 
 ## What it is, and what it deliberately is not
 
@@ -164,8 +164,9 @@ by it. `python/README.md` says what it does and what it leaves to the platform.
 
 ## What has not been done
 
-- The Python module has not run on a board. It passes the shared vectors and
-  reads the live service from a desktop, and that is all that is claimed for it.
+- The Python module has not run on a board. MicroPython 1.25.0 runs it on a
+  desktop, vectors and live service included, and CircuitPython has not been
+  tried at all. That is what is claimed for it and no more.
 - Nothing is timed. No TLS handshake measured, no certificate chain checked by
   hand on device, no proof of work timed.
 - A signed write from the board is not claimed here. The example constructs one

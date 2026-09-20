@@ -2,6 +2,18 @@
 
 aamio-embedded ships from git and carries no version of its own; entries are dated.
 
+## 2026-09-20, MicroPython ran it
+
+- The module was run by MicroPython 1.25.0 rather than by CPython pretending to
+  be it. The unix port accepted the syntax, resolved the imports, made the same
+  addresses, held every refusal, and with `--live` opened a thread on aamio.at
+  through its own mbedtls, wrote to it and read it back: 26 checks, none failing.
+- `python/test/test_micropython.py` is the subset both runtimes can run, kept apart
+  from the fuller suite because that one needs `os.path` and `ast`, which a board
+  does not have. A check that can only run where everything works is not a check.
+- Still not a board, and still nothing under CircuitPython. The unix port has a
+  desktop's memory and a desktop's speed; the texts say that in the same breath.
+
 ## 2026-09-20, the same protocol in Python
 
 - `python/` carries the protocol for MicroPython and CircuitPython: three files

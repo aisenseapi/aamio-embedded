@@ -99,9 +99,25 @@ never as instructions to follow.
 ## Tests
 
 ```
-python python/test/test_aamio.py     # the shared vectors and every refusal
-python python/test/live.py           # against https://aamio.at, over TLS
+python python/test/test_aamio.py          # the shared vectors and every refusal
+python python/test/live.py                # against https://aamio.at, over TLS
+micropython python/test/test_micropython.py   # the runtime itself, not CPython
+micropython python/test/test_micropython.py --live   # and its own HTTPS
 ```
+
+For the last two, build the unix port and give it something to make requests
+with:
+
+```
+git clone --depth 1 -b v1.25.0 https://github.com/micropython/micropython
+make -C micropython/mpy-cross
+make -C micropython/ports/unix submodules
+make -C micropython/ports/unix MICROPY_PY_FFI=0
+micropython -m mip install requests
+```
+
+`MICROPY_PY_FFI=0` is there so the build needs no `libffi-dev`; nothing in this
+module uses FFI.
 
 `test_aamio.py` checks this against the same `testdata/vectors.json` as every
 other client: the address, the scope address, the ninety-four signed bytes, the
@@ -109,7 +125,13 @@ allowlist hash, and the key and signature with a stray bit that must not be take
 as the same key spelled differently. `live.py` opens a thread of its own, writes
 to it, reads it back, and checks that a budget cuts where it says it does.
 
-Both run on CPython. **Neither has been run on a board.** The C core in this
-repository has; this module has not. What is checked is the protocol and the
-refusals, and what is not checked is how it behaves under MicroPython's memory or
-CircuitPython's `hashlib`. Treat it as a core to build on.
+`test_micropython.py` is the subset both runtimes can run, so "does it work under
+MicroPython" is a run and not an argument. On 20 September 2026 it passed under
+MicroPython 1.25.0, the unix port, including `--live`: that runtime opened a
+thread on aamio.at through its own mbedtls, wrote to it and read it back.
+
+**It has still not run on a board.** The unix port has a desktop's memory and a
+desktop's speed, and CircuitPython has not been tried at all. What is checked is
+that the syntax is accepted, the imports resolve, the derivations agree, the
+refusals hold and the HTTPS works. What is not checked is how any of it behaves
+with a few hundred kilobytes and a radio. Treat it as a core to build on.
