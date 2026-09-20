@@ -155,6 +155,35 @@ def b64url_decode(text, want):
     return bytes(out)
 
 
+def b64url_encode(raw):
+    """Bytes as unpadded base64url, the one spelling the service and an allowlist agree on.
+
+    Without this the module could read a key and a signature and not write one, so
+    the advice to sign with a library you brought and send the pair had nowhere to
+    turn the pair into the text that goes in a header.
+
+    The unused bits of the last character are zero, which is what makes the result
+    canonical and what `b64url_decode` refuses when they are not.
+    """
+    raw = _as_bytes(raw, "the value to encode")
+    out = []
+    acc = 0
+    bits = 0
+
+    for byte in raw:
+        acc = (acc << 8) | byte
+        bits += 8
+
+        while bits >= 6:
+            bits -= 6
+            out.append(_B64[(acc >> bits) & 63])
+
+    if bits:
+        out.append(_B64[(acc << (6 - bits)) & 63])
+
+    return "".join(out)
+
+
 def address(read_key):
     """The write address for a read key: base32(sha256(id)), first twenty, lowercase."""
     if not isinstance(read_key, str):

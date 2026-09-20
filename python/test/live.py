@@ -52,8 +52,24 @@ session = aamio.Session(read_key())
 print("live against " + HOST)
 print("  thread " + session.w)
 
-status, text = http.write(session.w, '{"text":"one"}', ttl=120)
-check(status == 201, "a write opens the thread: %d" % status)
+# The lifetime is set when the thread is opened and nowhere else. A write that
+# creates a thread gets the default, which is not what a caller who passed a ttl
+# to the write thought they were getting: that now raises instead of being sent
+# to a POST that does not read it.
+opened = http.open(session, ttl=120)
+check(opened.get("w") == session.w, "opening names the address back")
+check(opened.get("expire_at", 0) - opened.get("created_at", 0) == 120,
+      "and the lifetime asked for is the lifetime given: %d s"
+      % (opened.get("expire_at", 0) - opened.get("created_at", 0)))
+
+try:
+    http.write(session.w, '{"x":1}', ttl=120)
+    check(False, "a ttl on a write is refused rather than quietly ignored")
+except ValueError:
+    check(True, "a ttl on a write is refused rather than quietly ignored")
+
+status, text = http.write(session.w, '{"text":"one"}')
+check(status == 201, "a write is taken: %d" % status)
 
 http.write(session.w, '{"text":"two"}')
 http.write(session.w, '{"text":"three"}')

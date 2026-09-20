@@ -2,6 +2,31 @@
 
 aamio-embedded ships from git and carries no version of its own; entries are dated.
 
+## 2026-09-21, an allowlist that was not one
+
+- `Http.write` took `allow` and `ttl` and sent them as headers on a POST, which
+  reads neither: both belong on the PUT that opens the thread. A caller set an
+  allowlist, got 201, and had an inbox anyone holding the address could fill --
+  and a refused write is told to the writer and never to the owner, so an inbox
+  missing the key reads exactly like an inbox nobody wrote to. `Http.open` is new
+  and sets both; `write` refuses them and says where they go.
+- `b64url_encode` is new. The module could read a key and a signature and not
+  write one, so its own advice -- sign with a library you brought and pass the
+  pair -- had nowhere to turn the pair into the text a header carries.
+- `python/test/live_signed.py` walks that path to what the service reports back,
+  on both runtimes: signed write taken and verified, unsigned write refused 403
+  with a fix, a signature of the right shape that is not one refused 401. It found
+  the fault above on its first run, which is the argument for writing it.
+- `python/test/ed25519_reference.py` is the signer those tests use: pure Python,
+  checked against RFC 8032's own vector, and test material rather than something
+  to sign with. It branches on the bits of the secret key, which is the one thing
+  a signer must not do where anyone can measure it.
+- Measured rather than assumed, since the reason given for leaving signing out was
+  speed and that turned out to be wrong: one signature is 7 ms on CPython and 21 ms
+  under MicroPython 1.25.0 on the same desktop, with 1.9 MB of allocation churn.
+  The reason is side channels, not seconds, and the texts now say so.
+- The board that ran the C loop has a name: an M5Stack ATOM.
+
 ## 2026-09-20, MicroPython and a browser, both ways
 
 - Checked against the JavaScript client through the live page at

@@ -21,6 +21,23 @@ over USB and works, which is how these runtimes are actually used. The cost is
 speed, and the protocol work here is one sha256 per read, so there is nothing to
 gain back.
 
+## Opening a thread, and why it is not a write
+
+A write to an address creates the thread if it is not there, with the default
+lifetime and open to anyone holding the address. The lifetime and the allowlist
+are set when the thread is opened, and never after:
+
+```python
+http.open(session, ttl=120, allow=my_public_key)
+```
+
+`Http.write` used to accept `ttl` and `allow` and put them in headers a POST does
+not read. The caller got a 201 either way: a thread with the default lifetime, or
+an inbox anyone could fill while its owner believed it listed one key. It now
+refuses them and names `open` instead, because a refused write is told to the
+writer and never to you -- an inbox missing the key you meant to allow reads
+exactly like an inbox nobody wrote to.
+
 ## The loop
 
 ```python
@@ -84,11 +101,30 @@ never as instructions to follow.
 
 ## What is deliberately not here
 
-- **Ed25519.** Neither runtime has it. A pure-Python signature on a board that
-  already struggles with TLS would be slow, unaudited and mine. Sign
-  `aamio.sign_input(w, body)` with a library you brought and pass the pair to
-  `Http.write`. Unsigned writes work; an inbox with an allowlist refuses them, and
-  says so.
+- **Ed25519.** Neither runtime has it, and MicroPython's `hashlib` stops at
+  sha256, so a pure-Python signer needs a pure-Python SHA-512 as well. Sign
+  `aamio.sign_input(w, body)` with something you brought, encode the pair with
+  `aamio.b64url_encode`, and pass it to `Http.write(key=..., signature=...)`.
+  Unsigned writes work; an inbox with an allowlist refuses them, and says so.
+
+  The cost was measured on 21 September 2026 rather than assumed. One signature
+  of the ninety-four bytes aamio signs, in pure Python: 7 ms on CPython, 21 ms
+  under MicroPython 1.25.0 on the same desktop, and 1.9 MB of allocation churn
+  per signature, which on a board with a few hundred kilobytes is twenty-odd
+  collections for one signature. Speed is not the reason this is not shipped.
+
+  The reason is that a pure-Python scalar multiplication branches on the bits of
+  the secret key, and constant-time code cannot be written in these runtimes: no
+  control over branching, allocation, or when the collector runs, and the pauses
+  leak by themselves. `python/test/ed25519_reference.py` is that signer, kept as
+  test material with the warning in its own docstring, so the signing path has a
+  test without the module pretending to be a place to keep a key.
+
+  A board that must sign has two real options: ESP-IDF with
+  `espressif/libsodium`, which is the C core's ground, or a native `.mpy` wrapping
+  something reviewed. MicroPython loads machine code from a `.mpy` at import with
+  no firmware rebuild, one file per architecture; CircuitPython cannot, since its
+  `.mpy` is compiled bytecode rather than machine code.
 - **TLS and sockets.** The runtime's, and already audited there.
 - **The encrypted envelope.** Sealing needs Curve25519, which is the platform's,
   and the format is in the reference. `is_sealed(body)` tells you a sealed
@@ -107,6 +143,7 @@ python python/test/test_aamio.py          # the shared vectors and every refusal
 python python/test/live.py                # against https://aamio.at, over TLS
 micropython python/test/test_micropython.py   # the runtime itself, not CPython
 micropython python/test/test_micropython.py --live   # and its own HTTPS
+python python/test/live_signed.py         # a signed write, and an allowlist that refuses
 ```
 
 For the last two, build the unix port and give it something to make requests
@@ -133,6 +170,12 @@ to it, reads it back, and checks that a budget cuts where it says it does.
 MicroPython" is a run and not an argument. On 20 September 2026 it passed under
 MicroPython 1.25.0, the unix port, including `--live`: that runtime opened a
 thread on aamio.at through its own mbedtls, wrote to it and read it back.
+
+`live_signed.py` walks the signing path the rest of this file describes: the
+ninety-four bytes, the base64url pair, `X-Key` and `X-Sig`, into an inbox that
+lists exactly one key. The allowlist is what makes it a test -- the unsigned write
+has to be turned away, or the signed one proves nothing. It found the `allow` on a
+write described above, on its first run.
 
 On the same day it was checked against the JavaScript client, both ways, through
 the live test page at `aisense.no/try-aamio`: that page opened an inbox asking

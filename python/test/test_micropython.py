@@ -63,6 +63,9 @@ check(aamio.sign_input(v["w"], v["body"]).decode() == v["signInput"],
       "the ninety-four bytes that get signed")
 check(aamio.key_hash(v["a"]["public"]) == v["a"]["hash"], "the allowlist hash")
 
+check(aamio.b64url_encode(aamio.b64url_decode(v["a"]["public"], 32)) == v["a"]["public"],
+      "base64url round trips, so a key can be written as well as read")
+
 print("what is refused")
 refuses(lambda: aamio.check_key_shape(v["strayBits"]["key"]), "a key with a stray bit")
 refuses(lambda: aamio.check_signature_shape(v["strayBits"]["signature"]),
@@ -121,8 +124,12 @@ if "--live" in sys.argv:
     http = http_module.Http()
     check(http.transport is not None, "the runtime found something to make requests with")
 
-    status, _ = http.write(live.w, '{"text":"from micropython"}', ttl=120)
-    check(status == 201, "a write opened the thread: %d" % status)
+    opened = http.open(live, ttl=120)
+    check(opened.get("expire_at", 0) - opened.get("created_at", 0) == 120,
+          "the thread is opened with the lifetime asked for")
+
+    status, _ = http.write(live.w, '{"text":"from micropython"}')
+    check(status == 201, "and a write is taken: %d" % status)
 
     took = live.take_answer(http.read(live, limit=4, max_bytes=4096))
     check(len(took) == 1, "and it comes back: %d" % len(took))

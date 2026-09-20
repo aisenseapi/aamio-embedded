@@ -69,6 +69,18 @@ check(len(aamio.sign_input(v["w"], v["body"])) == aamio.AAMIO_SIGN_INPUT_LEN,
 check(aamio.key_hash(v["a"]["public"]) == v["a"]["hash"],
       "the allowlist hash is of the key's bytes, not of its text")
 
+print("base64url, both directions")
+for name, text_form, size in (("a public key", v["a"]["public"], 32),
+                              ("a signature", v["signature"], 64)):
+    raw = aamio.b64url_decode(text_form, size)
+    check(aamio.b64url_encode(raw) == text_form,
+          "%s survives a round trip through the encoder" % name)
+
+check(aamio.b64url_encode(aamio.b64url_decode(v["a"]["public"], 32)) == v["a"]["public"],
+      "and the encoder writes the canonical spelling, which is what the decoder takes back")
+check(aamio.b64url_encode(b"") == "", "nothing encodes to nothing")
+check("=" not in aamio.b64url_encode(b"a"), "and no padding is ever written")
+
 print("scopes")
 check(aamio.scope_address(v["scope"]["key"]) == v["scope"]["address"], "a scope address")
 check(aamio.address(v["scope"]["key"]) == v["scope"]["thread_w_of_the_same_string"],

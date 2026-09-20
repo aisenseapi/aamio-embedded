@@ -95,6 +95,9 @@ class _Urllib:
     def post(self, url, headers=None, data=None):
         return self.request("POST", url, headers=headers, data=data)
 
+    def put(self, url, headers=None, data=None):
+        return self.request("PUT", url, headers=headers, data=data)
+
 
 class Http:
     """Reads and writes for one service. Holds no key and remembers nothing."""
@@ -104,12 +107,15 @@ class Http:
         self.transport = transport or _find_requests() or _Urllib()
 
     def _send(self, method, path, headers, data=None):
-        # get and post are the two all three transports agree on. `request` exists
-        # on some of them and not on urequests, so it is not what this leans on.
+        # get, post and put are what all three transports agree on. `request`
+        # exists on some of them and not on urequests, so it is not what this
+        # leans on.
         url = self.host + path
 
         if method == "GET":
             answer = self.transport.get(url, headers=headers)
+        elif method == "PUT":
+            answer = self.transport.put(url, headers=headers, data=data)
         else:
             answer = self.transport.post(url, headers=headers, data=data)
 
@@ -126,6 +132,34 @@ class Http:
                 pass
 
         return status, text
+
+    def open(self, session, ttl=None, allow=None):
+        """Create the thread ahead of time, with its lifetime and its allowlist.
+
+        A write to an address creates a thread as well, but with the default
+        lifetime and open to anyone who has the address. Both of those are set here
+        and nowhere else, and neither can be changed afterwards.
+
+        `allow` is the keys that may write, as base64url or as their hashes, or
+        `"*"` for any key as long as the message is signed. An address handed out
+        before it lists the key you are handing it to is an address anyone can fill,
+        and a refused write is told to the writer and never to you -- so an inbox
+        missing that one key reads as an inbox nobody wrote to.
+        """
+        headers = {"X-Read": session.read_key, "Accept": "application/json"}
+
+        if ttl is not None:
+            headers["X-TTL"] = str(ttl)
+
+        if allow is not None:
+            headers["X-Allow"] = allow if isinstance(allow, str) else ",".join(allow)
+
+        status, text = self._send("PUT", "/" + session.w, headers)
+
+        if status not in (200, 201):
+            raise HttpError(status, text)
+
+        return json.loads(text)
 
     def read(self, session, limit=DEFAULT_LIMIT, max_bytes=DEFAULT_MAX_BYTES):
         """One read at the session's cursor. Gives back the body for `take_answer`.
@@ -159,6 +193,15 @@ class Http:
         an allowlist refuses an unsigned write, and that refusal carries a `fix`
         worth reading rather than retrying unchanged.
         """
+        # A write used to take these and send them, and the service reads neither
+        # on a POST: the caller set a lifetime and got the default, or set an
+        # allowlist and got an inbox anyone could fill, with a 201 either way.
+        # Refusing here is the only way that difference reaches whoever wrote it.
+        if allow is not None or ttl is not None:
+            raise ValueError(
+                "a lifetime and an allowlist are set when the thread is opened, "
+                "not on a write: use Http.open(session, ttl=..., allow=...)")
+
         if isinstance(body, str):
             body = body.encode("utf-8")
         elif isinstance(body, dict):

@@ -3,7 +3,7 @@
 The parts of aamio that are easy to get subtly wrong, in C, for devices that
 have a few hundred kilobytes and no room to be careless.
 
-**Status: the C core has been built, flashed to an ESP32 board and run against
+**Status: the C core has been built, flashed to an M5Stack ATOM and run against
 the live service.** Nothing on it is timed. Everything below about ESP32 memory
 is arithmetic against numbers measured on a host build, not a measurement on the
 device.
@@ -145,9 +145,9 @@ new inbox on waking rather than advertising one you can no longer read.
 
 ## What has run on a device
 
-On 20 September 2026 the ESP-IDF example was built, flashed to an ESP32 board and
-run against the live service: derive the address once, read with a byte budget,
-act, sleep. That is the loop `examples/sensor/session.h` describes, doing what it
+On 20 September 2026 the ESP-IDF example was built, flashed to an M5Stack ATOM
+and run against the live service: derive the address once, read with a byte
+budget, act, sleep. That is the loop `examples/sensor/session.h` describes, doing what it
 says, over TLS, against aamio.at.
 
 That is what is claimed, and no more.
