@@ -14,7 +14,15 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-FLAGS = ["-std=c99", "-Wall", "-Wextra", "-Werror", "-Iinclude"]
+FLAGS = ["-std=c99", "-Wall", "-Wextra", "-Werror", "-Iinclude", "-Iexamples/sensor"]
+
+# Two suites: the shared vectors through the core, and the sensor loop's own logic.
+# main_esp32.c is not among them, because it needs the SDK and has never been built.
+SUITES = [
+    ("conformance", [os.path.join("src", "aamio.c"), os.path.join("test", "conformance.c")]),
+    ("session", [os.path.join("src", "aamio.c"), os.path.join("examples", "sensor", "session.c"),
+                 os.path.join("test", "session_test.c")]),
+]
 
 
 def compiler():
@@ -46,11 +54,11 @@ def main():
 
     run([sys.executable, os.path.join("tools", "make-vectors.py"), "--write"])
 
-    binary = os.path.join(ROOT, "conformance.exe" if os.name == "nt" else "conformance")
-    run([gcc] + FLAGS + ["-O2", "-o", binary, os.path.join("src", "aamio.c"),
-                         os.path.join("test", "conformance.c")])
-    print()
-    run([binary])
+    for name, sources in SUITES:
+        binary = os.path.join(ROOT, name + (".exe" if os.name == "nt" else ""))
+        run([gcc] + FLAGS + ["-O2", "-o", binary] + sources)
+        print()
+        run([binary])
 
     if "--size" in sys.argv:
         print()

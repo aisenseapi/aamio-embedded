@@ -40,11 +40,13 @@ its size, and nothing is written to it on failure.
 ## What it passes
 
 `testdata/vectors.json` is the same file six of the seven aamio clients carry
-byte for byte, sha256 `342ea401…`. Twenty-nine checks, run with
+byte for byte, sha256 `342ea401…`. Forty-six checks in two suites, twenty-nine
+through the core and seventeen through the sensor loop, all with
 `-Wall -Wextra -Werror`:
 
 ```
-python tools/build.py          # generate the vector header, compile, run
+python tools/build.py          # generate the vector header, compile, run both suites
+python tools/build.py --size   # and print what it costs in code and stack
 ```
 
 The one that matters most is not in the list above. The signature in the
@@ -71,14 +73,16 @@ X-Max-Bytes: 2000
 Measured against the service, a thread holding one small sensor reading and one
 message of twenty kilobytes:
 
-| Read | Bytes |
+| Read | Bytes on the wire |
 |---|---|
-| No limit, as before | 20526 |
-| `X-Limit: 1` | 357 |
+| No limit, as before | 20529 |
+| `X-Limit: 1` | 360 |
 | Nothing new | 144 |
-| The large one, against a 2000 byte budget | 390 |
+| The large one, against a 2000 byte budget | 390, naming seq 2 at 20180 bytes |
 
-The envelope alone — address, times, count, allowlist, cursor — is 156 bytes.
+The envelope alone — address, times, count, allowlist, cursor — is 156 bytes. These
+are answers from `https://aamio.at`, not from a copy: run
+`tools/measure-live.py` to take them again.
 
 Whole messages only: a signed message is never cut, because half its bytes
 verify against nothing. One that alone exceeds the budget comes back as
@@ -88,6 +92,26 @@ read it with a bigger budget, or pass its `seq` as `after` to leave it unread.
 
 Check `read-limits` in `/.well-known/aamio.json` before relying on it. An older
 service ignores both headers and answers with the whole thread.
+
+## The example, and where the line is
+
+`examples/sensor` sends a signed reading and reads what came back. It is in two
+halves on purpose.
+
+`session.c` is the part that can go wrong quietly: the cursor, whether to read
+again or sleep, and what to do with a message too large to take. It is plain C,
+touches no SDK, and **seventeen checks run it on the host**, including a reset that
+hands back a lower cursor and a message that is stepped past rather than asked for
+again for ever.
+
+`main_esp32.c` is the glue: Wi-Fi, libsodium and `esp_http_client`. **It has never
+been compiled or flashed.** It says so in its own first lines, and it is not in the
+build. Read it as a description of the shape and expect to fix names against the
+SDK you have.
+
+Ed25519 comes from `espressif/libsodium`, Espressif's own port, which supports every
+target. mbedTLS is already in ESP-IDF and does TLS and sha256, but not Ed25519
+signing, which is why the signature and the transport come from different places.
 
 ## Sleep is not free, and the service will not pretend it is
 
@@ -109,7 +133,7 @@ new inbox on waking rather than advertising one you can no longer read.
 
 - No firmware built, flashed or measured. No TLS handshake timed, no
   certificate chain checked on device, no proof-of-work timed.
-- No example for ESP-IDF, Arduino or Pico SDK.
+- The ESP-IDF example is written and unbuilt. Nothing for Arduino or the Pico SDK.
 - No Ed25519 binding written against mbedTLS.
 - The encrypted envelope is not here: sealing needs Curve25519, which is the
   platform's, and the format is in the reference.

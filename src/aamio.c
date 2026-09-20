@@ -439,6 +439,49 @@ int aamio_json_field(const char *json, size_t len, const char *name,
                     *value_len = to - from;
 
                     return AAMIO_OK;
+                } else if (json[at] == '{' || json[at] == '[') {
+                    /* An object or a list is handed over whole, brackets and
+                     * all, so a caller can read a field inside it. Stopping at
+                     * the first comma would have cut too_large after its seq. */
+                    size_t to = at;
+                    int inner = 0;
+                    int quoted = 0;
+
+                    for (; to < len; to++) {
+                        char at_to = json[to];
+
+                        if (quoted) {
+                            if (at_to == '\\') {
+                                to++;
+                            } else if (at_to == '"') {
+                                quoted = 0;
+                            }
+
+                            continue;
+                        }
+
+                        if (at_to == '"') {
+                            quoted = 1;
+                        } else if (at_to == '{' || at_to == '[') {
+                            inner++;
+                        } else if (at_to == '}' || at_to == ']') {
+                            inner--;
+
+                            if (inner == 0) {
+                                to++;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (inner != 0) {
+                        return AAMIO_E_ENCODING;
+                    }
+
+                    *value = json + at;
+                    *value_len = to - at;
+
+                    return AAMIO_OK;
                 } else {
                     size_t to = at;
 

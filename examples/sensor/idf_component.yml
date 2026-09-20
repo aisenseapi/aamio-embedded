@@ -1,0 +1,10 @@
+## Dependencies for the ESP-IDF example. Espressif's own libsodium port does
+## Ed25519; mbedTLS, which ESP-IDF already bundles, does TLS and sha256 but not
+## Ed25519 signing.
+##
+## Untested: no board has built this.
+dependencies:
+  idf:
+    version: ">=5.0"
+  espressif/libsodium:
+    version: "^1.0.20"
