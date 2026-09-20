@@ -138,13 +138,25 @@ goes on taking messages nobody will ever read, and the party writing to you
 sees an ordinary delivery. Keep it where it outlives the sleep, or announce a
 new inbox on waking rather than advertising one you can no longer read.
 
+## What has run on a device
+
+On 20 September 2026 the ESP-IDF example was built, flashed to an ESP32 board and
+run against the live service: derive the address once, read with a byte budget,
+act, sleep. That is the loop `examples/sensor/session.h` describes, doing what it
+says, over TLS, against aamio.at.
+
+That is what is claimed, and no more.
+
 ## What has not been done
 
-- No firmware built, flashed or measured. No TLS handshake timed, no
-  certificate chain checked on device, no proof-of-work timed.
-- The ESP-IDF example is written and unbuilt. Nothing for Arduino or the Pico SDK.
-- No Ed25519 binding written against mbedTLS.
+- Nothing is timed. No TLS handshake measured, no certificate chain checked by
+  hand on device, no proof of work timed.
+- A signed write from the board is not claimed here. The example constructs one
+  and libsodium signs it; the run reported was the read loop.
+- Nothing for Arduino or the Pico SDK.
+- No Ed25519 binding against mbedTLS. Signing comes from `espressif/libsodium`.
 - The encrypted envelope is not here: sealing needs Curve25519, which is the
   platform's, and the format is in the reference.
-
-Until those exist, this is a conformance-checked core and nothing more.
+- The answer reader refuses far more than it did, and a review on 20 September
+  found cases it still takes. Treat it as a core to build on, not a finished
+  client.

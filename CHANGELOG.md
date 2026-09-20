@@ -2,6 +2,15 @@
 
 aamio-embedded ships from git and carries no version of its own; entries are dated.
 
+## 2026-09-20, it ran on a board
+
+- The ESP-IDF sensor example was built, flashed to an ESP32 board and run against
+  the live service: derive the address once, read with a byte budget, act, sleep.
+  Until now the README said no firmware had been built from it.
+- What is claimed is that loop and no more. Nothing is timed, no certificate chain
+  was checked by hand on device, and a signed write from the board is not claimed
+  -- the example constructs and signs one, but the run reported was the read loop.
+
 ## 2026-09-20, the reader hardened
 
 - The JSON reader refuses what it used to take. A name now needs its colon, a value
