@@ -5,3 +5,5 @@ conformance.exe
 *.o
 *.su
 *.exe
+__pycache__/
+*.pyc
