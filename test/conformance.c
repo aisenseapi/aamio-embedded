@@ -145,6 +145,50 @@ int main(void)
               "and a field that is not there says so", NULL);
     }
 
+    printf("\nwhat a scope key may be\n");
+    {
+        char address[AAMIO_ADDRESS_LEN];
+        /* Exactly an address in length and in alphabet. The service has refused
+         * this since scopes existed -- a key where the address goes, with the
+         * derivation in the fix -- because a 20-character string is an address, and
+         * deriving a scope from one derives an address from an address. This client
+         * took the thread id rule, which starts at 20. Health check and Codex, both
+         * on 20 September 2026. */
+        check(aamio_scope_address("abcdefghijklmnopqrst", 20, address) == AAMIO_E_ARG,
+              "a 20-character scope key is refused: that is an address, not a key", NULL);
+        check(aamio_scope_address("abcdefghijklmnopqrstuvwxy", 25, address) == AAMIO_E_ARG,
+              "and so is anything under twenty-six", NULL);
+        check(aamio_scope_address("abcdefghijklmnopqrstuvwxyz", 26, address) == AAMIO_OK,
+              "twenty-six is the shortest one there is", NULL);
+    }
+
+    printf("\nwhat a refused decode leaves behind\n");
+    {
+        uint8_t out[4];
+        size_t wrote = 0;
+
+        /* A caller told its call failed has every reason to believe its buffer is
+         * untouched. AQ! used to turn 5a5a5a5a into 015a5a5a and then report an
+         * encoding error, so the damage was silent in the one place it showed. */
+        memset(out, 0x5a, sizeof out);
+        check(aamio_b64url_decode("AQ!", 3, out, sizeof out, &wrote) == AAMIO_E_ENCODING,
+              "a character that is not base64url is refused", NULL);
+        check(out[0] == 0x5a && out[1] == 0x5a && out[2] == 0x5a && out[3] == 0x5a,
+              "and not a byte of the caller's buffer was written on the way", NULL);
+
+        memset(out, 0x5a, sizeof out);
+        check(aamio_b64url_decode("AQID", 4, out, 2, &wrote) == AAMIO_E_SMALL,
+              "a buffer too small is refused", NULL);
+        check(out[0] == 0x5a && out[1] == 0x5a,
+              "and that one writes nothing either", NULL);
+
+        memset(out, 0x5a, sizeof out);
+        wrote = 0;
+        check(aamio_b64url_decode("AQID", 4, out, sizeof out, &wrote) == AAMIO_OK
+              && wrote == 3 && out[0] == 1 && out[1] == 2 && out[2] == 3,
+              "and a string that does decode still decodes", NULL);
+    }
+
     printf("\n%d checks, %d failed\n", checks, failures);
 
     return failures == 0 ? 0 : 1;

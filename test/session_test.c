@@ -92,8 +92,14 @@ int main(void)
         check(session.left_unread == 0, "and nothing is still being stepped over", NULL);
     }
 
-    /* The thread at this address is gone. The cursor stays: whatever opens
-     * here next counts from one again. */
+    /* The thread at this address is gone, and the cursor goes with it.
+     *
+     * This check used to assert the opposite, with the right fact and the wrong
+     * conclusion drawn from it: whatever opens here next counts from one again, so
+     * a cursor of four would read nothing until the new thread passed four, and its
+     * first four messages would be skipped without a word. The health check and
+     * Codex both named it on 20 September 2026. aamio-python has forgotten the
+     * thread at this point since it had a cursor at all. */
     {
         static const char answer[] =
             "{\"w\":\"ohcibx4t22xc6hx22fch\",\"exists\":false,\"next\":0,\"note\":\"There is no "
@@ -101,7 +107,7 @@ int main(void)
 
         carried = aamio_session_take_answer(&session, answer, sizeof answer - 1);
         check(carried == 0 && session.gone == 1, "a thread that is gone says so", NULL);
-        check(session.after == 4, "and the cursor is left alone rather than reset to nothing", NULL);
+        check(session.after == 0, "and the cursor goes with it, so the next thread here is read from its first message", NULL);
     }
 
     /* A reset: the thread here counts from one again, and the lower cursor is

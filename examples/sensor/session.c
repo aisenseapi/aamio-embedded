@@ -110,132 +110,211 @@ int aamio_session_read_path(const aamio_session *session, char *out, size_t out_
     return AAMIO_OK;
 }
 
+/* How many messages the array holds, counted by its top-level objects. */
+static int count_messages(const char *json, size_t len)
+{
+    const char *value = NULL;
+    size_t value_len = 0;
+    size_t i;
+    int depth = 0;
+    int in_string = 0;
+    int messages = 0;
+
+    if (aamio_json_field(json, len, "messages", &value, &value_len) != AAMIO_OK) {
+        return 0;
+    }
+
+    for (i = 0; i < value_len; i++) {
+        char c = value[i];
+
+        if (in_string) {
+            if (c == '\\') {
+                i++;
+            } else if (c == '"') {
+                in_string = 0;
+            }
+        } else if (c == '"') {
+            in_string = 1;
+        } else if (c == '{') {
+            if (depth == 0) {
+                messages++;
+            }
+
+            depth++;
+        } else if (c == '}') {
+            depth--;
+        }
+    }
+
+    return messages;
+}
+
+/* One field, required to be there and to be the kind of thing it should be.
+ * A reader that strips the quotes cannot tell true from "true", so the type
+ * is asked for and compared: exists:"true" was read as a thread that exists
+ * and messages:"[]" as a list of none, both until 20 September 2026. */
+static int field_of_kind(const char *json, size_t len, const char *name, int kind,
+                         const char **value, size_t *value_len)
+{
+    int type = 0;
+
+    if (aamio_json_typed(json, len, name, value, value_len, &type) != AAMIO_OK) {
+        return 0;
+    }
+
+    return type == kind;
+}
+
+/* true or false, and nothing else wearing their letters. */
+static int boolean_of(const char *json, size_t len, const char *name, int *out)
+{
+    const char *value = NULL;
+    size_t value_len = 0;
+
+    if (!field_of_kind(json, len, name, AAMIO_JSON_LITERAL, &value, &value_len)) {
+        return 0;
+    }
+
+    if (value_len == 4 && memcmp(value, "true", 4) == 0) {
+        *out = 1;
+
+        return 1;
+    }
+
+    if (value_len == 5 && memcmp(value, "false", 5) == 0) {
+        *out = 0;
+
+        return 1;
+    }
+
+    return 0;
+}
+
 int aamio_session_take_answer(aamio_session *session, const char *json, size_t len)
 {
     const char *value = NULL;
     size_t value_len = 0;
     long next = 0;
+    long seq = 0;
+    long bytes = 0;
     int messages = 0;
+    int exists = 0;
+    int more = 0;
+    int has_next = 0;
+    int has_reset = 0;
 
     if (session == NULL || json == NULL) {
         return AAMIO_E_ARG;
     }
 
-    /* Checked whole before anything here is believed. A body cut off by a full
-     * buffer reads fine as far as it goes, and its fields moved the cursor past
-     * messages that never arrived. On a bad answer the session is left exactly as
-     * it was, so the next read asks for the same thing again.
+    /* Everything is read into these locals and checked here. Nothing below this
+     * block touches the session until the last check has passed, because the
+     * promise this function makes is that an answer it refuses leaves the session
+     * exactly as it was, so the next read asks for the same thing again. It used
+     * to set gone, more and the unread message on the way to checks that could
+     * still fail, and then return an error over a session it had already moved.
      *
-     * exists is required as well: an answer without it is not this service's, and
-     * a stray object with next in it used to be enough to move the cursor.
+     * Checked whole first. A body cut off by a full buffer reads fine as far as it
+     * goes, and its fields moved the cursor past messages that never arrived.
      */
     if (aamio_json_whole(json, len) != AAMIO_OK) {
         return AAMIO_E_ENCODING;
     }
 
-    if (aamio_json_field(json, len, "exists", &value, &value_len) != AAMIO_OK) {
+    /* exists is required: an answer without it is not this service's, and a stray
+     * object with next in it used to be enough to move the cursor. */
+    if (!boolean_of(json, len, "exists", &exists)) {
         return AAMIO_E_ENCODING;
     }
 
-    if (!(value_len == 4 && memcmp(value, "true", 4) == 0)
-        && !(value_len == 5 && memcmp(value, "false", 5) == 0)) {
-        return AAMIO_E_ENCODING;
-    }
-
-    /* A required field has a shape as well as a name. messages as a number is
-     * well formed JSON and not an answer, and it was enough to move the cursor.
-     * The check runs only where messages is expected: an answer that says the
-     * thread is gone carries none. */
-    if (value_len == 4) {
-        const char *listed = NULL;
-        size_t listed_len = 0;
-
-        if (aamio_json_field(json, len, "messages", &listed, &listed_len) != AAMIO_OK
-            || listed_len == 0 || listed[0] != '[') {
+    if (exists) {
+        /* A required field has a shape as well as a name. messages as a number is
+         * well formed JSON and not an answer, and it was enough to move the cursor.
+         * An answer that says the thread is gone carries none. */
+        if (!field_of_kind(json, len, "messages", AAMIO_JSON_ARRAY, &value, &value_len)) {
             return AAMIO_E_ENCODING;
         }
+
+        if (aamio_json_field(json, len, "more", &value, &value_len) == AAMIO_OK
+            && !boolean_of(json, len, "more", &more)) {
+            return AAMIO_E_ENCODING;
+        }
+
+        /* Named with its size rather than cut, because a signed message is never
+         * half sent. An object, with a sequence number that is a number and counts
+         * forwards: none of that was checked, so "7" and -7 both got through. */
+        if (aamio_json_field(json, len, "too_large", &value, &value_len) == AAMIO_OK) {
+            const char *inner = NULL;
+            size_t inner_len = 0;
+
+            const char *at_seq = NULL;
+            size_t seq_len = 0;
+
+            if (!field_of_kind(json, len, "too_large", AAMIO_JSON_OBJECT, &inner, &inner_len)
+                || !field_of_kind(inner, inner_len, "seq", AAMIO_JSON_NUMBER, &at_seq, &seq_len)
+                || aamio_json_number(inner, inner_len, "seq", &seq) != AAMIO_OK
+                || seq < 0) {
+                return AAMIO_E_ENCODING;
+            }
+
+            if (aamio_json_field(inner, inner_len, "bytes", &value, &value_len) == AAMIO_OK
+                && (aamio_json_number(inner, inner_len, "bytes", &bytes) != AAMIO_OK || bytes < 0)) {
+                return AAMIO_E_ENCODING;
+            }
+        }
+
+        /* A cursor this client cannot represent is not a cursor, and neither is a
+         * string that looks like one, nor a number that counts backwards. Believing
+         * the rest of the answer while quietly ignoring next is how a reader ends up
+         * at a position nobody chose: the whole answer is refused instead. */
+        if (aamio_json_field(json, len, "next", &value, &value_len) == AAMIO_OK) {
+            if (!field_of_kind(json, len, "next", AAMIO_JSON_NUMBER, &value, &value_len)
+                || aamio_json_number(json, len, "next", &next) != AAMIO_OK
+                || next < 0) {
+                return AAMIO_E_ENCODING;
+            }
+
+            has_next = 1;
+        }
+
+        has_reset = aamio_json_field(json, len, "reset", &value, &value_len) == AAMIO_OK;
+        messages = count_messages(json, len);
     }
 
+    /* Everything checked. From here the session changes and nothing can fail. */
     session->more = 0;
     session->left_unread = 0;
     session->left_bytes = 0;
 
-    /* exists: false is a thread nobody has written to yet, one that expired
-     * and was swept, or one a restart took away. The cursor stays where it is:
-     * a write opens a new thread here and it counts from one again. */
-    if (value_len == 5 && memcmp(value, "false", 5) == 0) {
+    /* exists: false is a thread nobody has written to yet, one that expired and was
+     * swept, or one a restart took away. The cursor goes with it: whatever opens at
+     * this address next counts from one, and an old cursor would read nothing until
+     * the new thread passed it. Keeping it was the same fault the reset branch below
+     * exists to avoid, one step earlier. */
+    if (!exists) {
         session->gone = 1;
+        session->after = 0;
 
         return 0;
     }
 
     session->gone = 0;
+    session->more = more;
 
-    if (aamio_json_field(json, len, "more", &value, &value_len) == AAMIO_OK
-        && value_len == 4 && memcmp(value, "true", 4) == 0) {
-        session->more = 1;
+    if (seq > 0) {
+        session->left_unread = seq;
+        session->left_bytes = bytes;
     }
 
-    /* Named with its size rather than cut, because a signed message is never
-     * half sent. Remembered so the next path goes past it. */
-    if (aamio_json_field(json, len, "too_large", &value, &value_len) == AAMIO_OK) {
-        long seq = 0;
-        long bytes = 0;
-
-        if (aamio_json_number(value, value_len, "seq", &seq) == AAMIO_OK) {
-            session->left_unread = seq;
-            aamio_json_number(value, value_len, "bytes", &bytes);
-            session->left_bytes = bytes;
-        }
-    }
-
-    /* A cursor this client cannot represent is not a cursor. Believing the rest of
-     * the answer while quietly ignoring next is how a reader ends up at a position
-     * nobody chose: the whole answer is refused instead. */
-    if (aamio_json_field(json, len, "next", &value, &value_len) == AAMIO_OK
-        && aamio_json_number(json, len, "next", &next) != AAMIO_OK) {
-        return AAMIO_E_ENCODING;
-    }
-
-    if (aamio_json_number(json, len, "next", &next) == AAMIO_OK && next > session->after) {
+    if (has_next && next > session->after) {
         session->after = next;
-    } else if (aamio_json_field(json, len, "reset", &value, &value_len) == AAMIO_OK) {
+    } else if (has_next && has_reset) {
         /* A lower cursor after a reset is the one to keep: the thread at this
          * address counts from one again, and holding the old number would read
-         * nothing until the new one passed it. The device's own record of what
-         * it has already carried out is not the service's cursor and does not
-         * move with it. */
-        if (aamio_json_number(json, len, "next", &next) == AAMIO_OK) {
-            session->after = next;
-        }
-    }
-
-    if (aamio_json_field(json, len, "messages", &value, &value_len) == AAMIO_OK) {
-        size_t i;
-        int depth = 0;
-        int in_string = 0;
-
-        for (i = 0; i < value_len; i++) {
-            char c = value[i];
-
-            if (in_string) {
-                if (c == '\\') {
-                    i++;
-                } else if (c == '"') {
-                    in_string = 0;
-                }
-            } else if (c == '"') {
-                in_string = 1;
-            } else if (c == '{') {
-                if (depth == 0) {
-                    messages++;
-                }
-
-                depth++;
-            } else if (c == '}') {
-                depth--;
-            }
-        }
+         * nothing until the new one passed it. The device's own record of what it
+         * has already carried out is not the service's cursor and does not move
+         * with it. */
+        session->after = next;
     }
 
     return messages;

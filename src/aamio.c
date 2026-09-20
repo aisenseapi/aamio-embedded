@@ -183,14 +183,20 @@ int aamio_address(const char *id, size_t id_len, char out[AAMIO_ADDRESS_LEN])
 int aamio_scope_address(const char *key, size_t key_len, char out[AAMIO_ADDRESS_LEN])
 {
     static const char prefix[] = "aamio-scope-v1\n";
-    uint8_t buffer[sizeof prefix - 1 + AAMIO_ID_MAX];
+    uint8_t buffer[sizeof prefix - 1 + AAMIO_SCOPE_KEY_MAX];
     uint8_t digest[32];
 
     if (out == NULL) {
         return AAMIO_E_ARG;
     }
 
-    if (!id_is_shaped(key, key_len)) {
+    /* A scope key, not a thread id. The two differ in one place only, and it is
+     * the place that matters: a scope key is at least 26 characters so that it
+     * cannot be a 20-character address. This took the thread rule and so took an
+     * address as a key, deriving a second address from the first -- which is the
+     * mistake the service refuses by name, with the derivation in the fix. */
+    if (key_len < AAMIO_SCOPE_KEY_MIN || key_len > AAMIO_SCOPE_KEY_MAX
+        || !id_is_shaped(key, key_len)) {
         return AAMIO_E_ARG;
     }
 
@@ -298,7 +304,7 @@ int aamio_b64url_decode(const char *text, size_t len, uint8_t *out, size_t out_s
                 return AAMIO_E_SMALL;
             }
 
-            out[written++] = (uint8_t) ((buffer >> bits) & 0xff);
+            written++;
         }
     }
 
@@ -307,6 +313,26 @@ int aamio_b64url_decode(const char *text, size_t len, uint8_t *out, size_t out_s
      * of the same key, which an allowlist would read as a different identity. */
     if (bits > 0 && (buffer & ((1u << bits) - 1u)) != 0) {
         return AAMIO_E_ENCODING;
+    }
+
+    /* Only now, with every character known good and the length known to fit.
+     * It used to write each byte as it worked them out, so a string that failed
+     * at its last character left the caller's buffer part overwritten and part
+     * its own -- while the return said the call had failed and the caller had
+     * every reason to believe its buffer untouched. AQ! turned 5a5a5a5a into
+     * 015a5a5a and reported an encoding error, on 20 September 2026. */
+    buffer = 0;
+    bits = 0;
+    written = 0;
+
+    for (i = 0; i < len; i++) {
+        buffer = (buffer << 6) | (uint32_t) value_of(text[i]);
+        bits += 6;
+
+        if (bits >= 8) {
+            bits -= 8;
+            out[written++] = (uint8_t) ((buffer >> bits) & 0xff);
+        }
     }
 
     if (wrote != NULL) {
@@ -385,6 +411,12 @@ int aamio_check_signature_shape(const char *text, size_t len)
 int aamio_json_field(const char *json, size_t len, const char *name,
                      const char **value, size_t *value_len)
 {
+    return aamio_json_typed(json, len, name, value, value_len, NULL);
+}
+
+int aamio_json_typed(const char *json, size_t len, const char *name,
+                     const char **value, size_t *value_len, int *type)
+{
     size_t name_len;
     size_t i;
     int depth = 0;
@@ -414,12 +446,27 @@ int aamio_json_field(const char *json, size_t len, const char *name,
             if (depth == 1 && json[i + 1 + name_len] == '"'
                 && memcmp(json + i + 1, name, name_len) == 0) {
                 size_t at = i + name_len + 2;
+                int colons = 0;
 
-                while (at < len && (json[at] == ' ' || json[at] == ':')) {
+                /* One colon, and whitespace either side of it. The old loop took any
+                 * run of spaces and colons, so a name with none and a name with three
+                 * both read as a pair. */
+                while (at < len && (json[at] == ' ' || json[at] == '\n'
+                                    || json[at] == '\r' || json[at] == '\t')) {
                     at++;
                 }
 
-                if (at >= len) {
+                while (at < len && json[at] == ':') {
+                    colons++;
+                    at++;
+                }
+
+                while (at < len && (json[at] == ' ' || json[at] == '\n'
+                                    || json[at] == '\r' || json[at] == '\t')) {
+                    at++;
+                }
+
+                if (at >= len || colons != 1) {
                     return AAMIO_E_ARG;
                 }
 
@@ -433,6 +480,13 @@ int aamio_json_field(const char *json, size_t len, const char *name,
 
                     if (to > len) {
                         return AAMIO_E_ARG;
+                    }
+
+                    /* The quotes come off, which is what a caller reading a string
+                     * wants and what made "true" and true the same answer. The type
+                     * is the only thing that tells them apart now. */
+                    if (type != NULL) {
+                        *type = AAMIO_JSON_STRING;
                     }
 
                     *value = json + from;
@@ -478,6 +532,10 @@ int aamio_json_field(const char *json, size_t len, const char *name,
                         return AAMIO_E_ENCODING;
                     }
 
+                    if (type != NULL) {
+                        *type = json[at] == '{' ? AAMIO_JSON_OBJECT : AAMIO_JSON_ARRAY;
+                    }
+
                     *value = json + at;
                     *value_len = to - at;
 
@@ -485,8 +543,19 @@ int aamio_json_field(const char *json, size_t len, const char *name,
                 } else {
                     size_t to = at;
 
-                    while (to < len && json[to] != ',' && json[to] != '}' && json[to] != ' ') {
+                    while (to < len && json[to] != ',' && json[to] != '}'
+                           && json[to] != ']' && json[to] != ' ' && json[to] != '\n'
+                           && json[to] != '\r' && json[to] != '\t') {
                         to++;
+                    }
+
+                    if (to == at) {
+                        return AAMIO_E_ENCODING;
+                    }
+
+                    if (type != NULL) {
+                        *type = (json[at] == '-' || (json[at] >= '0' && json[at] <= '9'))
+                                ? AAMIO_JSON_NUMBER : AAMIO_JSON_LITERAL;
                     }
 
                     *value = json + at;
@@ -517,6 +586,13 @@ int aamio_json_field(const char *json, size_t len, const char *name,
 #define AT_VALUE 2
 #define AT_COMMA 3
 #define AT_COLON 4
+/* A string in an object is a name or a value, and until this existed both set
+ * the same state, so {"exists"true} read as a name and a value with nothing
+ * between them. A name is followed by a colon and by nothing else. */
+#define AT_NAME  5
+/* Deeper than a service answer ever goes, and the bitmask that remembers which
+ * levels are objects is this wide. Deeper is refused rather than guessed at. */
+#define JSON_MAX_DEPTH 30
 
 int aamio_json_whole(const char *json, size_t len)
 {
@@ -525,6 +601,8 @@ int aamio_json_whole(const char *json, size_t len)
     int in_string = 0;
     int closed = 0;
     int was = AT_START;
+    int naming = 0;
+    unsigned long object_at = 0;
 
     if (json == NULL || len == 0) {
         return AAMIO_E_ARG;
@@ -546,6 +624,7 @@ int aamio_json_whole(const char *json, size_t len)
                 i++;
             } else if (c == '\"') {
                 in_string = 0;
+                was = naming ? AT_NAME : AT_VALUE;
             }
 
             continue;
@@ -568,17 +647,49 @@ int aamio_json_whole(const char *json, size_t len)
                 return AAMIO_E_ENCODING;
             }
 
+            /* Inside an object, a string where a value may not yet stand is the
+             * name of the pair. Inside an array there are no names. */
+            naming = depth >= 1 && depth <= JSON_MAX_DEPTH
+                     && (object_at & (1UL << (depth - 1))) != 0
+                     && (was == AT_OPEN || was == AT_COMMA);
+
+            if (!naming && was != AT_START && was != AT_COLON
+                && !(depth >= 1 && depth <= JSON_MAX_DEPTH
+                     && (object_at & (1UL << (depth - 1))) == 0)) {
+                return AAMIO_E_ENCODING;
+            }
+
             in_string = 1;
-            was = AT_VALUE;
         } else if (c == '{' || c == '[') {
             if (was != AT_START && was != AT_OPEN && was != AT_COMMA && was != AT_COLON) {
                 return AAMIO_E_ENCODING;
             }
 
+            /* An object inside an object inside an object, thirty deep, is not an
+             * answer this service sends, and guessing past the mask is worse than
+             * saying no. */
+            if (depth >= JSON_MAX_DEPTH) {
+                return AAMIO_E_ENCODING;
+            }
+
             depth++;
+
+            if (c == '{') {
+                object_at |= 1UL << (depth - 1);
+            } else {
+                object_at &= ~(1UL << (depth - 1));
+            }
+
             was = AT_OPEN;
         } else if (c == '}' || c == ']') {
-            if (was == AT_COMMA || was == AT_COLON) {
+            if (was == AT_COMMA || was == AT_COLON || was == AT_NAME) {
+                return AAMIO_E_ENCODING;
+            }
+
+            /* A brace closing a bracket is not a deeper object; it is a different
+             * document, and one of the two shapes is not what the caller read. */
+            if (depth >= 1 && depth <= JSON_MAX_DEPTH
+                && ((c == '}') != ((object_at & (1UL << (depth - 1))) != 0))) {
                 return AAMIO_E_ENCODING;
             }
 
@@ -600,15 +711,22 @@ int aamio_json_whole(const char *json, size_t len)
 
             was = AT_COMMA;
         } else if (c == ':') {
-            if (was != AT_VALUE) {
+            /* After a name, and after nothing else. A colon following a value is
+             * how {"exists"true} and {"a"::1} both got through. */
+            if (was != AT_NAME) {
                 return AAMIO_E_ENCODING;
             }
 
             was = AT_COLON;
         } else {
             /* A number or a literal. Its first character has to stand where a value
-             * may; the rest of it runs on without changing the state. */
-            if (was == AT_OPEN || was == AT_COMMA || was == AT_COLON) {
+             * may; the rest of it runs on without changing the state. Inside an
+             * object that is after a colon only: a bare literal where a name
+             * belongs is not a pair. */
+            int inside_object = depth >= 1 && depth <= JSON_MAX_DEPTH
+                                && (object_at & (1UL << (depth - 1))) != 0;
+
+            if (was == AT_COLON || (!inside_object && (was == AT_OPEN || was == AT_COMMA))) {
                 was = AT_VALUE;
             } else if (was != AT_VALUE) {
                 return AAMIO_E_ENCODING;
@@ -618,7 +736,7 @@ int aamio_json_whole(const char *json, size_t len)
 
     /* An unterminated string, or a body that stopped before its last brace: both are
      * what a truncated answer looks like, and both used to be read as an answer. */
-    return (in_string || depth != 0 || !closed) ? AAMIO_E_ENCODING : AAMIO_OK;
+    return (in_string || depth != 0 || !closed || was == AT_NAME) ? AAMIO_E_ENCODING : AAMIO_OK;
 }
 
 int aamio_json_number(const char *json, size_t len, const char *name, long *out)
@@ -644,6 +762,12 @@ int aamio_json_number(const char *json, size_t len, const char *name, long *out)
     }
 
     if (i >= value_len) {
+        return AAMIO_E_ENCODING;
+    }
+
+    /* 041 is not JSON, and a reader that takes it takes 041 and 41 as the same
+     * cursor from a service that sent neither. */
+    if (value[i] == '0' && value_len - i > 1) {
         return AAMIO_E_ENCODING;
     }
 

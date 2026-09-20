@@ -48,6 +48,12 @@ extern "C" {
 /* A read key is 20 to 64 characters of [a-z0-9]; 26 is what the service advises. */
 #define AAMIO_ID_MIN          20
 #define AAMIO_ID_MAX          64
+/* A scope key is longer than an address at its shortest, so the two cannot be
+ * confused. The service has refused a 20-character scope key since scopes
+ * existed, by name and with the derivation in the fix; this client took one and
+ * derived an address from what was already an address. */
+#define AAMIO_SCOPE_KEY_MIN   26
+#define AAMIO_SCOPE_KEY_MAX   64
 
 /* ---------------------------------------------------------------- sha256 -- */
 
@@ -88,6 +94,10 @@ int aamio_key_hash(const char *public_key, size_t key_len, char out[65]);
  * Decoding refuses every spelling but the canonical one, which is what the
  * service does since 18 September 2026: an allowlist compares strings, and two
  * spellings of one key are two identities. */
+/* Nothing is written to out unless the whole string decodes: the text is
+ * checked first and copied second. It used to decode as it went, so a string
+ * that failed in the middle left the caller's buffer half overwritten while
+ * the return said the call had failed. */
 int aamio_b64url_decode(const char *text, size_t len, uint8_t *out, size_t out_size, size_t *wrote);
 int aamio_b64url_encode(const uint8_t *raw, size_t len, char *out, size_t out_size);
 
@@ -105,6 +115,19 @@ int aamio_check_signature_shape(const char *text, size_t len);
  * A device should ask the service for a small answer to begin with, with the
  * X-Limit and X-Max-Bytes headers; see the README. Without them an answer can
  * be about a megabyte, which is the whole reason this file exists. */
+/* What a value is, for a caller that has to tell true from "true". */
+#define AAMIO_JSON_STRING     1
+#define AAMIO_JSON_NUMBER     2
+#define AAMIO_JSON_LITERAL    3   /* true, false, null */
+#define AAMIO_JSON_OBJECT     4
+#define AAMIO_JSON_ARRAY      5
+
+/* aamio_json_field, and the type as well. The field reader hands back a string
+ * without its quotes, so "true" and true arrive identical: a service answering
+ * exists:"true" was read as a thread that exists, and messages:"[]" as a list.
+ * Both were accepted until 20 September 2026. */
+int aamio_json_typed(const char *json, size_t len, const char *name,
+                     const char **value, size_t *value_len, int *type);
 int aamio_json_field(const char *json, size_t len, const char *name,
                      const char **value, size_t *value_len);
 

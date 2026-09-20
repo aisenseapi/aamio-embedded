@@ -9,9 +9,9 @@ measured numbers, not a measurement on hardware. Nobody has flashed this.
 
 ## What it is, and what it deliberately is not
 
-An ESP32 already has TLS and Ed25519 through mbedTLS, and an HTTP client
-through its SDK. What it does not have is the handful of derivations that
-decide whether a client is actually compatible or only nearly so:
+An ESP32 already has TLS and an HTTP client through its SDK, and Ed25519 from
+`espressif/libsodium`, a component away. What it does not have is the handful of
+derivations that decide whether a client is actually compatible or only nearly so:
 
 - a write address from a read key
 - which exact bytes get signed
@@ -25,14 +25,22 @@ helper is how a small client becomes the weakest thing on the device.
 
 ## Measured
 
-Built with `gcc -Os` for x86-64:
+Measured on 20 September 2026 with gcc 16.2.0 (MinGW-W64 x86-64, ucrt) at
+`-Os -std=c99`, on x86-64. A figure without its compiler and flags is not one
+anybody can repeat, and a host build is not a device: a cross compiler for the
+part you are using will give a different number, and the point of these is the
+order of magnitude.
 
 | | |
 |---|---|
-| Code | 4064 bytes |
+| Code | 4768 bytes |
 | Initialised data, bss | 0, 0 |
 | Heap | none, ever |
-| Deepest stack | about 640 bytes, in sha256 |
+| Deepest stack, sha256 chain | 640 bytes: 272 in `aamio_sha256`, 368 in `sha256_block` |
+
+The stack figure is that one chain, measured with `-fstack-usage`. It is not a
+ceiling for every public call and not one for your program: whatever calls into
+this library has a frame of its own, and the frames above it are yours.
 
 There is no `malloc` in this library. Every output buffer is the caller's, with
 its size, and nothing is written to it on failure.
@@ -40,8 +48,9 @@ its size, and nothing is written to it on failure.
 ## What it passes
 
 `testdata/vectors.json` is the same file six of the seven aamio clients carry
-byte for byte, sha256 `342ea401…`. Forty-nine checks in two suites, twenty-nine
-through the core and twenty through the sensor loop, all with
+byte for byte, sha256 `342ea401…`. One hundred checks in three suites --
+thirty-seven through the core, twenty through the sensor loop and forty-three
+on what an answer has to be before the loop believes any of it -- all with
 `-Wall -Wextra -Werror`:
 
 ```

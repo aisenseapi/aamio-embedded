@@ -22,6 +22,8 @@ SUITES = [
     ("conformance", [os.path.join("src", "aamio.c"), os.path.join("test", "conformance.c")]),
     ("session", [os.path.join("src", "aamio.c"), os.path.join("examples", "sensor", "session.c"),
                  os.path.join("test", "session_test.c")]),
+    ("answers", [os.path.join("src", "aamio.c"), os.path.join("examples", "sensor", "session.c"),
+                 os.path.join("test", "answers_test.c")]),
 ]
 
 

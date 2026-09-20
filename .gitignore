@@ -4,3 +4,4 @@ conformance
 conformance.exe
 *.o
 *.su
+*.exe
