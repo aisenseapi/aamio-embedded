@@ -594,11 +594,154 @@ int aamio_json_typed(const char *json, size_t len, const char *name,
  * levels are objects is this wide. Deeper is refused rather than guessed at. */
 #define JSON_MAX_DEPTH 30
 
+static int is_hex(char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+static int is_space(char c)
+{
+    return c == ' ' || c == '\n' || c == '\r' || c == '\t';
+}
+
+/* One string, from its opening quote. Gives the index past the closing quote,
+ * or 0 when it is not one: an escape that is not JSON's, a control character
+ * in the raw, or no closing quote before the end. A backslash used to skip
+ * whatever came next, so "\q" passed, and a document with "\q" in it is not
+ * JSON; a reader that took it took an answer from a service that sent nothing
+ * of the kind. Bytes past ASCII are let through as they are: this checks the
+ * grammar, not the UTF-8, and a caller reading a string unescapes what it reads. */
+static size_t string_end(const char *json, size_t len, size_t at)
+{
+    size_t i = at + 1;
+
+    while (i < len) {
+        unsigned char c = (unsigned char) json[i];
+
+        if (c == '"') {
+            return i + 1;
+        }
+
+        if (c < 0x20) {
+            return 0;
+        }
+
+        if (c == '\\') {
+            i++;
+
+            if (i >= len) {
+                return 0;
+            }
+
+            switch (json[i]) {
+            case '"': case '\\': case '/': case 'b': case 'f': case 'n': case 'r': case 't':
+                break;
+            case 'u':
+                if (i + 4 >= len || !is_hex(json[i + 1]) || !is_hex(json[i + 2])
+                    || !is_hex(json[i + 3]) || !is_hex(json[i + 4])) {
+                    return 0;
+                }
+
+                i += 4;
+                break;
+            default:
+                return 0;
+            }
+        }
+
+        i++;
+    }
+
+    return 0;
+}
+
+/* -?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?, and nothing before or after. */
+static int is_number(const char *s, size_t n)
+{
+    size_t i = 0;
+    size_t start;
+
+    if (i < n && s[i] == '-') {
+        i++;
+    }
+
+    if (i >= n) {
+        return 0;
+    }
+
+    if (s[i] == '0') {
+        i++;
+    } else if (s[i] >= '1' && s[i] <= '9') {
+        while (i < n && s[i] >= '0' && s[i] <= '9') {
+            i++;
+        }
+    } else {
+        return 0;
+    }
+
+    if (i < n && s[i] == '.') {
+        i++;
+        start = i;
+
+        while (i < n && s[i] >= '0' && s[i] <= '9') {
+            i++;
+        }
+
+        if (i == start) {
+            return 0;
+        }
+    }
+
+    if (i < n && (s[i] == 'e' || s[i] == 'E')) {
+        i++;
+
+        if (i < n && (s[i] == '+' || s[i] == '-')) {
+            i++;
+        }
+
+        start = i;
+
+        while (i < n && s[i] >= '0' && s[i] <= '9') {
+            i++;
+        }
+
+        if (i == start) {
+            return 0;
+        }
+    }
+
+    return i == n;
+}
+
+/* One literal or number, from its first character. Gives the index past it, or
+ * 0 when it is not one. A bare word where a value belongs used to run on as one:
+ * messages:[garbage] was balanced and moved the cursor, and so was next:041.
+ * true, false, null and a number in JSON's own grammar are values; nothing else. */
+static size_t scalar_end(const char *json, size_t len, size_t at)
+{
+    size_t to = at;
+    size_t n;
+
+    while (to < len && json[to] != ',' && json[to] != ']' && json[to] != '}' && !is_space(json[to])) {
+        to++;
+    }
+
+    n = to - at;
+
+    if ((n == 4 && memcmp(json + at, "true", 4) == 0)
+        || (n == 5 && memcmp(json + at, "false", 5) == 0)
+        || (n == 4 && memcmp(json + at, "null", 4) == 0)
+        || is_number(json + at, n)) {
+        return to;
+    }
+
+    return 0;
+}
+
 int aamio_json_whole(const char *json, size_t len)
 {
     size_t i = 0;
     int depth = 0;
-    int in_string = 0;
     int closed = 0;
     int was = AT_START;
     int naming = 0;
@@ -608,7 +751,7 @@ int aamio_json_whole(const char *json, size_t len)
         return AAMIO_E_ARG;
     }
 
-    while (i < len && (json[i] == ' ' || json[i] == '\n' || json[i] == '\r' || json[i] == '\t')) {
+    while (i < len && is_space(json[i])) {
         i++;
     }
 
@@ -616,27 +759,18 @@ int aamio_json_whole(const char *json, size_t len)
         return AAMIO_E_ENCODING;
     }
 
-    for (; i < len; i++) {
+    while (i < len) {
         char c = json[i];
 
-        if (in_string) {
-            if (c == '\\') {
-                i++;
-            } else if (c == '\"') {
-                in_string = 0;
-                was = naming ? AT_NAME : AT_VALUE;
-            }
+        if (is_space(c)) {
+            i++;
 
             continue;
         }
 
-        if (closed && c != ' ' && c != '\n' && c != '\r' && c != '\t') {
+        if (closed) {
             /* Something after the object. Not one answer. */
             return AAMIO_E_ENCODING;
-        }
-
-        if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
-            continue;
         }
 
         /* Balanced brackets are not a grammar. A trailing comma, a double comma and
@@ -659,7 +793,16 @@ int aamio_json_whole(const char *json, size_t len)
                 return AAMIO_E_ENCODING;
             }
 
-            in_string = 1;
+            /* The whole string at once, escapes checked, or none of it. */
+            i = string_end(json, len, i);
+
+            if (i == 0) {
+                return AAMIO_E_ENCODING;
+            }
+
+            was = naming ? AT_NAME : AT_VALUE;
+
+            continue;
         } else if (c == '{' || c == '[') {
             if (was != AT_START && was != AT_OPEN && was != AT_COMMA && was != AT_COLON) {
                 return AAMIO_E_ENCODING;
@@ -726,17 +869,30 @@ int aamio_json_whole(const char *json, size_t len)
             int inside_object = depth >= 1 && depth <= JSON_MAX_DEPTH
                                 && (object_at & (1UL << (depth - 1))) != 0;
 
-            if (was == AT_COLON || (!inside_object && (was == AT_OPEN || was == AT_COMMA))) {
-                was = AT_VALUE;
-            } else if (was != AT_VALUE) {
+            if (was != AT_COLON && (inside_object || (was != AT_OPEN && was != AT_COMMA))) {
                 return AAMIO_E_ENCODING;
             }
+
+            /* The whole token at once, and only if it is one. It used to set the
+             * state on the first character and let the rest run on unread. */
+            i = scalar_end(json, len, i);
+
+            if (i == 0) {
+                return AAMIO_E_ENCODING;
+            }
+
+            was = AT_VALUE;
+
+            continue;
         }
+
+        i++;
     }
 
-    /* An unterminated string, or a body that stopped before its last brace: both are
-     * what a truncated answer looks like, and both used to be read as an answer. */
-    return (in_string || depth != 0 || !closed || was == AT_NAME) ? AAMIO_E_ENCODING : AAMIO_OK;
+    /* A body that stopped before its last brace is what a truncated answer looks
+     * like, and it used to be read as an answer. A string cut off is caught
+     * above, where the string is read. */
+    return (depth != 0 || !closed || was == AT_NAME) ? AAMIO_E_ENCODING : AAMIO_OK;
 }
 
 int aamio_json_number(const char *json, size_t len, const char *name, long *out)

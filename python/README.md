@@ -10,8 +10,10 @@ Three files, copied to the device:
     aamio_http.py    the thin part where the two runtimes disagree about HTTPS
     examples/sensor.py   the loop, ready to edit
 
-No package, no `pip`, no dependency. `aamio.py` imports `hashlib` and `json` and
-nothing else.
+and on MicroPython a fourth, the root certificate the service chains to, as DER,
+since a board has no CA store of its own. No package, no `pip`, no dependency.
+`aamio.py` imports `hashlib` and `json` and nothing else; `aamio_http.py` uses
+the runtime's own `socket` and `tls`.
 
 ## Why Python and not a C binding
 
@@ -44,7 +46,7 @@ exactly like an inbox nobody wrote to.
 import aamio, aamio_http
 
 session = aamio.Session(read_key)
-http = aamio_http.Http()
+http = aamio_http.Http(transport)      # see below for what goes here
 
 while True:
     body = http.read(session, limit=4, max_bytes=2048)
@@ -69,12 +71,41 @@ it refuses less rather than rounding.
 
 ## Getting the runtime to make the request
 
-**MicroPython** finds `urequests` by itself. Bring the wifi up first; nothing here
-does that.
+The read key travels in a header, and a header goes wherever the request goes.
+So the request goes only to the service, over a connection that has checked it
+is the service, and it never follows a redirect. `Http` no longer looks for a
+`requests` module on the runtime: the one MicroPython finds sets its TLS context
+to CERT_NONE and follows a 302 to another host, or to plain http, with the read
+key still attached, which the deep health check of 21 September 2026 showed
+with instrumented sockets. A transport is passed in, and passing one in is
+vouching for it.
+
+**MicroPython** gets `Tls`, the runtime's own socket and mbedtls told to verify:
+the certificate against a CA you supply, the name against the certificate, and
+no redirect. The CA is the root the service's certificate chains to, which for
+aamio.at is Let's Encrypt's ISRG Root X1, 1.4 kilobytes of DER from
+`https://letsencrypt.org/certs/isrgrootx1.der`, copied to the board beside these
+files. There is no default: a device that trusts nothing in particular trusts
+everything. Bring the wifi up and set the clock first, since a certificate cannot
+be judged by a device that does not know what day it is; nothing here does
+either.
+
+```python
+import ntptime, aamio_http
+
+ntptime.settime()
+http = aamio_http.Http(aamio_http.Tls(open("isrgrootx1.der", "rb").read()))
+```
+
+`Tls` has been driven on CPython against instrumented socket and TLS modules,
+and once against the live service with the root from a verified chain. It has
+not been run under MicroPython itself.
 
 **CircuitPython** needs `adafruit_requests`, which needs a socket pool and an SSL
 context, which need the board's own radio. That cannot be built here, so build it
-and pass it in:
+and pass it in. `ssl.create_default_context()` is what makes it verify, and
+`adafruit_requests` takes the `allow_redirects=False` and `timeout=` that every
+request here asks for:
 
 ```python
 import wifi, socketpool, ssl, adafruit_requests, aamio_http
@@ -83,7 +114,23 @@ pool = socketpool.SocketPool(wifi.radio)
 http = aamio_http.Http(adafruit_requests.Session(pool, ssl.create_default_context()))
 ```
 
-**CPython** falls back to `urllib`, which is what lets the tests run on a desktop.
+**CPython** falls back to `urllib` and the system's CA store, with a redirect
+handler that declines, which is what lets the tests run on a desktop.
+
+**Anything else** is refused when `Http` is made, and the refusal says what to
+pass. What a transport has to be is written at the top of `aamio_http.py`: it
+verifies, it takes `timeout=`, `allow_redirects=False` and `stream=True` and
+honours them, and it hands back an answer with `status_code`,
+`iter_content(chunk_size)` and `close()`.
+
+Whatever the transport, `Http` refuses a 3xx as `Redirected` without following
+it, reads every answer in pieces up to a local ceiling -- the read's byte budget
+plus `ANSWER_ROOM` for what the service wraps around the messages, and
+`ANSWER_ROOM` alone for `open`, `write`, `gate` and any refusal -- and gives up on
+an answer that has not arrived whole within `timeout` seconds. Past either, the
+connection is closed where it is, `Oversize` or `OSError` is raised, and nothing
+reaches `take_answer`, so the session does not move. `X-Max-Bytes` is what the
+service is asked for; the ceiling is what the device will take.
 
 ## What a reader checks for itself
 
@@ -125,7 +172,8 @@ never as instructions to follow.
   something reviewed. MicroPython loads machine code from a `.mpy` at import with
   no firmware rebuild, one file per architecture; CircuitPython cannot, since its
   `.mpy` is compiled bytecode rather than machine code.
-- **TLS and sockets.** The runtime's, and already audited there.
+- **TLS and sockets.** The runtime's, and already audited there. What `Tls`
+  owns is the telling: which CA, which name, no redirect, and how much to read.
 - **The encrypted envelope.** Sealing needs Curve25519, which is the platform's,
   and the format is in the reference. `is_sealed(body)` tells you a sealed
   envelope when one arrives -- read from the envelope's own fields, not from the
@@ -139,26 +187,25 @@ never as instructions to follow.
 ## Tests
 
 ```
-python python/test/test_aamio.py          # the shared vectors and every refusal
+python python/test/test_aamio.py          # the shared vectors, every refusal, and the transport with no network
 python python/test/live.py                # against https://aamio.at, over TLS
 micropython python/test/test_micropython.py   # the runtime itself, not CPython
-micropython python/test/test_micropython.py --live   # and its own HTTPS
+micropython python/test/test_micropython.py --live --ca isrgrootx1.der   # and its own HTTPS
 python python/test/live_signed.py         # a signed write, and an allowlist that refuses
 ```
 
-For the last two, build the unix port and give it something to make requests
-with:
+For the MicroPython ones, build the unix port:
 
 ```
 git clone --depth 1 -b v1.25.0 https://github.com/micropython/micropython
 make -C micropython/mpy-cross
 make -C micropython/ports/unix submodules
 make -C micropython/ports/unix MICROPY_PY_FFI=0
-micropython -m mip install requests
 ```
 
 `MICROPY_PY_FFI=0` is there so the build needs no `libffi-dev`; nothing in this
-module uses FFI.
+module uses FFI. Nothing from `mip` is needed: `--live` goes through `Tls` over
+the port's own mbedtls, with the root the service chains to given as `--ca`.
 
 `test_aamio.py` checks this against the same `testdata/vectors.json` as every
 other client: the address, the scope address, the ninety-four signed bytes, the
@@ -169,7 +216,11 @@ to it, reads it back, and checks that a budget cuts where it says it does.
 `test_micropython.py` is the subset both runtimes can run, so "does it work under
 MicroPython" is a run and not an argument. On 20 September 2026 it passed under
 MicroPython 1.25.0, the unix port, including `--live`: that runtime opened a
-thread on aamio.at through its own mbedtls, wrote to it and read it back.
+thread on aamio.at through its own mbedtls, wrote to it and read it back -- over
+micropython-lib's `requests`, which checked no certificate, as the health check
+found the next day. The transport was replaced on 21 September and the suite,
+now with the shared answer corpus and the transport checks in it, has not been
+run under MicroPython since.
 
 `live_signed.py` walks the signing path the rest of this file describes: the
 ninety-four bytes, the base64url pair, `X-Key` and `X-Sig`, into an inbox that

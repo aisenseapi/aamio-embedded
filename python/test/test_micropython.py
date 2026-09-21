@@ -17,6 +17,7 @@ imports resolve, the derivations agree and the refusals hold.
 import sys
 
 sys.path.insert(0, "python")
+sys.path.insert(0, "python/test")
 
 import aamio  # noqa: E402
 
@@ -76,7 +77,7 @@ refuses(lambda: aamio.address("too short"), "a read key under twenty characters"
 print("the session")
 s = aamio.Session(v["id"])
 check(s.read_path() == "/" + v["w"], "the first read carries no cursor")
-check(len(s.take_answer('{"exists":true,"messages":[{"seq":1},{"seq":2}],"next":2}')) == 2,
+check(len(s.take_answer('{"exists":true,"messages":[{"seq":1,"body":"one"},{"seq":2,"body":"two"}],"next":2}')) == 2,
       "two messages come back")
 check(s.after == 2 and s.read_path() == "/" + v["w"] + "/after/2", "and the cursor followed")
 
@@ -90,6 +91,49 @@ check(s.after == was, "and a refusal left the session where it was")
 s.take_answer('{"exists":false}')
 check(s.gone and s.after == 0, "exists false forgets the cursor")
 
+print("the shared corpus, testdata/answers.json")
+# The same file the C suite reads through answers.h, and the fuller Python suite
+# reads directly: what is refused has to be refused on this runtime too, since
+# json.loads here takes what CPython's refuses.
+with open("testdata/answers.json") as handle:
+    corpus = aamio.json.loads(handle.read())
+
+
+def arranged():
+    session = aamio.Session(v["id"])
+    session.after = corpus["before"]["after"]
+    session.more = corpus["before"]["more"]
+    session.left_unread = corpus["before"]["left_unread"]
+    session.left_bytes = corpus["before"]["left_bytes"]
+
+    return session
+
+
+for entry in corpus["refused"]:
+    s = arranged()
+    refuses(lambda: s.take_answer(entry["answer"]), entry["what"])
+    check((s.after, s.more, s.left_unread, s.left_bytes, s.gone)
+          == (corpus["before"]["after"], corpus["before"]["more"], corpus["before"]["left_unread"],
+              corpus["before"]["left_bytes"], False),
+          "    and left the session where it was")
+
+for entry in corpus["taken"]:
+    s = arranged()
+
+    try:
+        got = s.take_answer(entry["answer"])
+        check(len(got) == entry["messages"] and s.after == entry["after"], entry["what"])
+    except aamio.AamioError as wrong:
+        check(False, entry["what"] + " (refused: %s)" % wrong)
+
+print("what a key is made of")
+for what, bad in (("a capital letter", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+                  ("a hyphen", "abcdefghijklm-opqrstuvwxyz"),
+                  ("a letter outside ASCII", "abcdefghijklmnopqrstuvwxy\u00e9"),
+                  ("a carriage return and a line feed", "abcdefghijklmnopqrstuvwx\r\n")):
+    refuses(lambda: aamio.address(bad), "a read key with %s" % what)
+    refuses(lambda: aamio.scope_address(bad), "a scope key with %s" % what)
+
 print("a message, and its hash")
 payload = '{"reading": 21}'
 whole = {"seq": 1, "body": payload, "sha256": aamio._hex(aamio._sha256(payload.encode()))}
@@ -99,6 +143,8 @@ refuses(lambda: aamio.body_of(whole), "and one that does not is refused")
 check(aamio.is_sealed(v["envelopeFromAToB"]) is True,
       "a sealed envelope is recognised, so a device that cannot open one knows")
 check(aamio.is_sealed(payload) is False, "and plain text is not mistaken for one")
+check(aamio.is_sealed('{"\\u00652ee":"nacl.box.v1","ct":"x","nonce":"y"}') is True,
+      "and an envelope whose e2ee is written as a unicode escape is still one")
 
 print("the transport module loads")
 import aamio_http  # noqa: E402
@@ -107,11 +153,18 @@ check(aamio_http.DEFAULT_MAX_BYTES > 0, "a read has a byte budget by default")
 check(aamio_http.Http(transport=1).host == "https://aamio.at",
       "and the host is the service unless told otherwise")
 
+import http_checks  # noqa: E402
+
+http_checks.run(check)
+
 if "--live" in sys.argv:
-    # The runtime's own HTTPS, not CPython's. On the unix port that is
-    # micropython-lib's `requests` over mbedtls, which is the same library a board
-    # uses; on a board it is `urequests`. What this does not prove is a board's
-    # memory or a board's radio.
+    # The runtime's own HTTPS, not CPython's. On the unix port and on a board that
+    # is `Tls` over the runtime's mbedtls, with the root the service chains to
+    # given on the command line as DER, since a board has no CA store of its own:
+    #
+    #     micropython python/test/test_micropython.py --live --ca isrgrootx1.der
+    #
+    # What this does not prove is a board's memory or a board's radio.
     import os
 
     import aamio_http as http_module
@@ -121,8 +174,20 @@ if "--live" in sys.argv:
     key = "".join(alphabet[byte % 36] for byte in os.urandom(32))
 
     live = aamio.Session(key)
-    http = http_module.Http()
-    check(http.transport is not None, "the runtime found something to make requests with")
+
+    if sys.implementation.name == "cpython":
+        http = http_module.Http()
+    else:
+        at = sys.argv.index("--ca") if "--ca" in sys.argv else -1
+
+        if at < 0 or at + 1 >= len(sys.argv):
+            print("live on this runtime needs --ca <isrgrootx1.der>, the root aamio.at chains to, and the clock set")
+            raise SystemExit(2)
+
+        with open(sys.argv[at + 1], "rb") as handle:
+            http = http_module.Http(http_module.Tls(handle.read()))
+
+    check(http.transport is not None, "the runtime has something to make requests with")
 
     opened = http.open(live, ttl=120)
     check(opened.get("expire_at", 0) - opened.get("created_at", 0) == 120,

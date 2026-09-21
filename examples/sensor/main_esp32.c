@@ -1,12 +1,14 @@
 /* A sensor on an ESP32 that signs a reading, sends it, and reads what came back.
  *
  * ===========================================================================
- * THIS FILE HAS NEVER BEEN COMPILED OR FLASHED.
+ * Built with ESP-IDF and flashed to an M5Stack ATOM on 20 September 2026,
+ * where it read the live service over TLS. It said until then that it had
+ * never been compiled, and the connect page at aamio.at said so too.
  *
  * Everything in it that could be tested without a board was moved to
  * session.c, which is run by test/session_test.c. What is left is the glue to
- * ESP-IDF: Wi-Fi, libsodium and esp_http_client. Treat it as a description of
- * the shape, check it against the SDK you have, and expect to fix names.
+ * ESP-IDF: Wi-Fi, libsodium and esp_http_client. Check it against the SDK
+ * version you have and expect to fix names.
  * ===========================================================================
  *
  * What it needs, in idf_component.yml:

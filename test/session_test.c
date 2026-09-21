@@ -169,11 +169,13 @@ int main(void)
         check(moved == 0, "and none of them moves the cursor past a message nobody read", NULL);
     }
 
-    /* And a whole one is still taken, after all that. */
+    /* And a whole one is still taken, after all that. The message carries a body:
+     * one without is not a message, since 21 September, and is refused with the
+     * answer it came in. */
     {
         static const char answer[] =
             "{\"w\":\"ohcibx4t22xc6hx22fch\",\"exists\":true,"
-            "\"messages\":[{\"seq\":9}],\"next\":9,\"waited\":0}";
+            "\"messages\":[{\"seq\":9,\"body\":\"nine\"}],\"next\":9,\"waited\":0}";
 
         check(aamio_session_take_answer(&session, answer, sizeof answer - 1) == 1
               && session.after == 9, "and a whole answer is still taken", NULL);

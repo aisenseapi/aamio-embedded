@@ -4,7 +4,10 @@ The same loop as `examples/sensor/session.h` in the C, which is the one that was
 built, flashed and run against the live service on 20 September 2026. This is that
 loop for a board running Python.
 
-Copy `aamio.py`, `aamio_http.py` and this file to the device. Then, on MicroPython:
+Copy `aamio.py`, `aamio_http.py` and this file to the device, and on MicroPython
+the root certificate the service chains to as well, as DER: for aamio.at that is
+Let's Encrypt's ISRG Root X1. Then, on MicroPython, with the clock set, since a
+certificate cannot be judged without one:
 
     import network
     wlan = network.WLAN(network.STA_IF)
@@ -13,8 +16,12 @@ Copy `aamio.py`, `aamio_http.py` and this file to the device. Then, on MicroPyth
     while not wlan.isconnected():
         pass
 
+    import ntptime, aamio_http
+    ntptime.settime()
+    http = aamio_http.Http(aamio_http.Tls(open("isrgrootx1.der", "rb").read()))
+
     import sensor
-    sensor.run("your-read-key-goes-here")
+    sensor.run("your-read-key-goes-here", http)
 
 On CircuitPython the wifi is already up if `settings.toml` has it, and the
 transport has to be built by hand because it needs the board's radio:
@@ -77,6 +84,8 @@ def act(message):
 
 def run(read_key, http=None, forever=True):
     session = aamio.Session(read_key)
+    # Without one, a desktop gets urllib and a board gets a refusal naming what
+    # to pass: nothing that verifies is picked up from the runtime by itself.
     http = http or aamio_http.Http()
 
     print("reading", session.w)

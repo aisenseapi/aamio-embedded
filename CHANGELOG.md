@@ -2,6 +2,74 @@
 
 aamio-embedded ships from git and carries no version of its own; entries are dated.
 
+## 2026-09-21, six findings from the deep health check
+
+The deep health check of 21 September 2026 reproduced six faults here, two of them
+in what carried the read key. Each has a test that failed before the fix and none
+of the tests touches the network.
+
+- **F1, the transport authenticated nobody.** `Http()` took whatever `requests` it
+  found, and the one MicroPython finds sets its TLS context to CERT_NONE, so the
+  read key went over a connection that had checked no certificate. Nothing is
+  picked up from the runtime any more. CPython gets urllib with a certificate
+  required and the name checked; a board with nothing passed in is refused when
+  `Http` is made, and told what to pass. `Tls` is new: the runtime's own socket
+  and mbedtls with CERT_REQUIRED against a CA the caller supplies as DER, the name
+  checked against the certificate, no default CA, HTTP/1.0 with the connection
+  closed after one answer. What a transport has to be is written at the top of
+  `aamio_http.py`, and whoever passes one in vouches for it. `Tls` was driven on
+  CPython against instrumented socket and TLS modules, and once against the live
+  service with the root from a verified chain; it has not been run under
+  MicroPython.
+- **F2, a redirect carried the key away.** A 302 from the service to another host,
+  or to plain http, was followed with X-Read still attached, by micropython-lib's
+  `requests` and by the CPython fallback. Every request now asks the transport for
+  no redirects, and a 3xx that comes back is refused as `Redirected` and never
+  followed, on read, open, write and gate alike: one request, nothing read from
+  it, the connection closed. urllib gets a redirect handler that declines, and
+  `Tls` follows nothing by construction. A transport that follows a redirect in
+  silence has sent the key before this module can see it, which is why passing
+  one in is vouching for it. A plain `http://` host is refused for the same reason.
+- **F3, no local limit on what came back.** No timeout on MicroPython, and
+  `answer.text` read whatever arrived, whole. Every answer is now read in pieces
+  up to a local ceiling -- the read's byte budget plus `ANSWER_ROOM` for what the
+  service wraps around the messages, and `ANSWER_ROOM` alone for open, write,
+  gate and every refusal -- and within a `timeout` that bounds one wait on the
+  socket and the whole of the answer. Past either the connection is closed where
+  it is and `Oversize`, or `OSError` for the clock, is raised; nothing reaches
+  `take_answer`, so the session does not move.
+- **F4, an envelope spelled sideways.** `is_sealed` looked for the text `"e2ee"`
+  before parsing, so an envelope with the field written as `"\u00652ee"`, which
+  decodes to the same name, was not seen and went to whatever acts on messages.
+  Field names are read after decoding now; the only thing looked at before
+  parsing is that the body starts with a brace.
+- **F5, invalid answers moved the cursor.** `messages:[garbage]` and an escape like
+  `"\q"` passed the C reader, which knew brackets and not the grammar, and
+  MicroPython's `json.loads` took `"\q"` and `next:041` where CPython's refuses
+  them. A message that was `null` counted as none on the C and came back as
+  `None` in Python, with the cursor moved past it either way. `reset:false` read
+  as a reset, because the presence of the name was the signal. And `bytes:"7"`
+  in `too_large` read as 7 on the C. The C reader now knows JSON's strings,
+  escapes, literals and numbers; Python has the same check in `json_whole`, run
+  before `json.loads`, so the two runtimes refuse the same things. Every message
+  has to be an object with a `seq` that counts forwards and a `body` that is
+  text, all of them before the cursor moves past any; a `reset` has to be the
+  documented object with `after` and `newest`; and a number has to be a number.
+  The cases live in `testdata/answers.json`, one corpus read by the C suite
+  through the generated `test/answers.h` and by both Python suites, so a case
+  that is refused on one runtime and taken on another cannot go unnoticed.
+- **F6, a key of any alphabet.** `address` and `scope_address` checked a key's
+  length and not what it was made of, so a key with a capital, a hyphen, a letter
+  outside ASCII or a line break in it derived an address the service would never
+  answer for -- and the line break would have gone into a header. `[a-z0-9]` is
+  required before anything is derived, as the C has always required; an address
+  is checked before it goes into a path, and a key or a signature before it goes
+  into a header. `Tls` refuses anything outside printable ASCII in a header on
+  its own account, since it writes headers as lines.
+- The C suites: 37, 20 and 85 checks, from 37, 20 and 43. The Python suites:
+  242 and 166, from 77 and 24, the transport now among them.
+  Still nothing under MicroPython itself, and still no board.
+
 ## 2026-09-21, an allowlist that was not one
 
 - `Http.write` took `allow` and `ttl` and sent them as headers on a POST, which

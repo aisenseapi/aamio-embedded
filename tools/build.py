@@ -1,4 +1,4 @@
-"""Generate the vector header, compile the conformance test, run it.
+"""Generate the vector and answer headers, compile the three suites, run them.
 
     python tools/build.py           # the lot
     python tools/build.py --size    # and print what it costs in code and stack
@@ -55,6 +55,7 @@ def main():
     print("compiler: %s" % gcc)
 
     run([sys.executable, os.path.join("tools", "make-vectors.py"), "--write"])
+    run([sys.executable, os.path.join("tools", "make-answers.py"), "--write"])
 
     for name, sources in SUITES:
         binary = os.path.join(ROOT, name + (".exe" if os.name == "nt" else ""))

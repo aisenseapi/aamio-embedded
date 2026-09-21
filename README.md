@@ -9,8 +9,10 @@ is arithmetic against numbers measured on a host build, not a measurement on the
 device.
 
 There is a Python module beside it, in `python/`, for MicroPython and
-CircuitPython. MicroPython 1.25.0 runs it and reads the live service through its
-own TLS, and it has **not** been run on a board.
+CircuitPython. MicroPython 1.25.0 ran it on a desktop on 20 September, and read
+the live service through a transport that, it turned out, checked no
+certificate; that transport was replaced on 21 September and the module has not
+been run under MicroPython since. It has **not** been run on a board.
 
 ## What it is, and what it deliberately is not
 
@@ -30,15 +32,16 @@ helper is how a small client becomes the weakest thing on the device.
 
 ## Measured
 
-Measured on 20 September 2026 with gcc 16.2.0 (MinGW-W64 x86-64, ucrt) at
-`-Os -std=c99`, on x86-64. A figure without its compiler and flags is not one
+Measured on 21 September 2026 with gcc 16.2.0 (MinGW-W64 x86-64, ucrt) at
+`-Os -std=c99`, on x86-64, after the answer reader learned JSON's grammar; it
+was 4768 bytes of code the day before. A figure without its compiler and flags is not one
 anybody can repeat, and a host build is not a device: a cross compiler for the
 part you are using will give a different number, and the point of these is the
 order of magnitude.
 
 | | |
 |---|---|
-| Code | 4768 bytes |
+| Code | 5412 bytes |
 | Initialised data, bss | 0, 0 |
 | Heap | none, ever |
 | Deepest stack, sha256 chain | 640 bytes: 272 in `aamio_sha256`, 368 in `sha256_block` |
@@ -53,13 +56,14 @@ its size, and nothing is written to it on failure.
 ## What it passes
 
 `testdata/vectors.json` is the same file six of the seven aamio clients carry
-byte for byte, sha256 `342ea401…`. One hundred checks in three suites --
-thirty-seven through the core, twenty through the sensor loop and forty-three
-on what an answer has to be before the loop believes any of it -- all with
-`-Wall -Wextra -Werror`:
+byte for byte, sha256 `342ea401…`. A hundred and forty-two checks in three
+suites -- thirty-seven through the core, twenty through the sensor loop and
+eighty-five on what an answer has to be before the loop believes any of it,
+forty-two of those from `testdata/answers.json`, the corpus the Python suites
+read as well -- all with `-Wall -Wextra -Werror`:
 
 ```
-python tools/build.py          # generate the vector header, compile, run both suites
+python tools/build.py          # generate the vector and answer headers, compile, run the three suites
 python tools/build.py --size   # and print what it costs in code and stack
 ```
 
@@ -118,10 +122,10 @@ touches no SDK, and **seventeen checks run it on the host**, including a reset t
 hands back a lower cursor and a message that is stepped past rather than asked for
 again for ever.
 
-`main_esp32.c` is the glue: Wi-Fi, libsodium and `esp_http_client`. **It has never
-been compiled or flashed.** It says so in its own first lines, and it is not in the
-build. Read it as a description of the shape and expect to fix names against the
-SDK you have.
+`main_esp32.c` is the glue: Wi-Fi, libsodium and `esp_http_client`. It was built
+with ESP-IDF and flashed to an M5Stack ATOM on 20 September 2026, where it read
+the live service; see "What has run on a device" below. It is not in the host
+build, and names may still need fixing against the SDK version you have.
 
 Ed25519 comes from `espressif/libsodium`, Espressif's own port, which supports every
 target. mbedTLS is already in ESP-IDF and does TLS and sha256, but not Ed25519
@@ -157,16 +161,24 @@ That is what is claimed, and no more.
 `python/` holds the protocol for boards that run MicroPython or CircuitPython:
 three files copied over USB, no package and no dependency beyond `hashlib` and
 `json`. It makes the same addresses, signs the same ninety-four bytes, refuses
-the same spellings, and carries the same read session. A C module for these
-runtimes would mean building custom firmware or forking one, which almost nobody
-does; the protocol work is one sha256 per read, so there is nothing to win back
-by it. `python/README.md` says what it does and what it leaves to the platform.
+the same spellings, and carries the same read session. On MicroPython the root
+certificate the service chains to goes with them, as DER, since a board has no
+CA store of its own: the module authenticates the service or does not talk to
+it, and it follows no redirect, since a redirect is the same request, read key
+and all, going somewhere else. A C module for these runtimes would mean building
+custom firmware or forking one, which almost nobody does; the protocol work is
+one sha256 per read, so there is nothing to win back by it. `python/README.md`
+says what it does and what it leaves to the platform.
 
 ## What has not been done
 
-- The Python module has not run on a board. MicroPython 1.25.0 runs it on a
-  desktop, vectors and live service included, and CircuitPython has not been
-  tried at all. That is what is claimed for it and no more.
+- The Python module has not run on a board. MicroPython 1.25.0 ran it on a
+  desktop on 20 September, vectors and live service included, and CircuitPython
+  has not been tried at all. The transport was rebuilt on 21 September, after
+  the health check found the old one checking no certificate and following
+  redirects with the key attached, and the new one has not been run under
+  MicroPython: it was driven on CPython against instrumented sockets, and once
+  against the live service. That is what is claimed for it and no more.
 - Nothing is timed. No TLS handshake measured, no certificate chain checked by
   hand on device, no proof of work timed.
 - A signed write from the board is not claimed here. The example constructs one
@@ -175,6 +187,8 @@ by it. `python/README.md` says what it does and what it leaves to the platform.
 - No Ed25519 binding against mbedTLS. Signing comes from `espressif/libsodium`.
 - The encrypted envelope is not here: sealing needs Curve25519, which is the
   platform's, and the format is in the reference.
-- The answer reader refuses far more than it did, and a review on 20 September
-  found cases it still takes. Treat it as a core to build on, not a finished
-  client.
+- The answer reader refuses far more than it did. A review on 20 September and
+  the health check on 21 September each found cases it still took -- a bare
+  word where a value belongs, an escape that is not JSON's, a message that is
+  `null` -- and those are refused now, on the C and in Python alike, from one
+  corpus. Treat it as a core to build on, not a finished client.

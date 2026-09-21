@@ -11,8 +11,9 @@ What is deliberately not here, for the same reason it is not in the C:
   * Ed25519. Neither runtime has it, and a pure-Python signature on a board that
     already struggles with TLS would be slow, unaudited and mine. Pass a signer
     in instead -- anything that takes the bytes and gives back sixty-four.
-  * TLS and sockets. Those are the runtime's, through `urequests` or
-    `adafruit_requests`; `aamio_http.py` holds the thin part that differs.
+  * TLS and sockets. Those are the runtime's, told to verify: `aamio_http.Tls`
+    on MicroPython, `adafruit_requests` on CircuitPython. `aamio_http.py` holds
+    the thin part that differs, and what a transport has to be.
 
 Runs on CPython as well, which is how the tests beside it check this against the
 same `testdata/vectors.json` as every other client.
@@ -40,6 +41,9 @@ AAMIO_SIGN_INPUT_LEN = 94
 _B32 = "abcdefghijklmnopqrstuvwxyz234567"
 _B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 _HEX = "0123456789abcdef"
+# What a read key and a scope key are made of, and nothing else: the service
+# refuses anything outside it, and the C beside this always has.
+_KEY_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
 
 SCOPE_PREFIX = "aamio-scope-v1\n"
 SIGN_PREFIX = b"aamio-v1\n"
@@ -184,14 +188,45 @@ def b64url_encode(raw):
     return "".join(out)
 
 
+def _key_shaped(text, what, shortest, longest):
+    """A read key or a scope key: text, of a length in range, of [a-z0-9] and nothing else.
+
+    The length was checked and the alphabet was not, so a key with a capital, a
+    hyphen, a letter outside ASCII or a carriage return in it derived an address
+    that looked like one, from a key the service refuses on sight. The C beside
+    this refused all of them. A control character is worse than a wrong key: it
+    goes into a header on a transport that writes headers as lines.
+    """
+    if not isinstance(text, str):
+        raise ArgError("%s is text" % what)
+
+    if not shortest <= len(text) <= longest:
+        raise LengthError("%s is %d to %d characters, this is %d"
+                          % (what, shortest, longest, len(text)))
+
+    for character in text:
+        if character not in _KEY_ALPHABET:
+            raise EncodingError("%s is lowercase letters and digits, and this has %r"
+                                % (what, character))
+
+
+def check_address(w):
+    """Raises unless this is an address: twenty characters of lowercase base32.
+
+    An address goes into a path, and a signature is over it, so it is checked
+    before either happens.
+    """
+    if not isinstance(w, str) or len(w) != AAMIO_ADDRESS_LEN:
+        raise LengthError("an address is %d characters" % AAMIO_ADDRESS_LEN)
+
+    for character in w:
+        if character not in _B32:
+            raise EncodingError("not a base32 address: %r" % character)
+
+
 def address(read_key):
     """The write address for a read key: base32(sha256(id)), first twenty, lowercase."""
-    if not isinstance(read_key, str):
-        raise ArgError("the read key is text")
-
-    if not AAMIO_ID_MIN <= len(read_key) <= AAMIO_ID_MAX:
-        raise LengthError("a read key is %d to %d characters, this is %d"
-                          % (AAMIO_ID_MIN, AAMIO_ID_MAX, len(read_key)))
+    _key_shaped(read_key, "a read key", AAMIO_ID_MIN, AAMIO_ID_MAX)
 
     return _b32_address(_sha256(read_key.encode("utf-8")))
 
@@ -202,12 +237,7 @@ def scope_address(scope_key):
     The prefix is what keeps them apart: a group that shares a scope key must not
     thereby hand out a readable thread at the address anybody could derive from it.
     """
-    if not isinstance(scope_key, str):
-        raise ArgError("the scope key is text")
-
-    if not AAMIO_SCOPE_KEY_MIN <= len(scope_key) <= AAMIO_SCOPE_KEY_MAX:
-        raise LengthError("a scope key is %d to %d characters, this is %d"
-                          % (AAMIO_SCOPE_KEY_MIN, AAMIO_SCOPE_KEY_MAX, len(scope_key)))
+    _key_shaped(scope_key, "a scope key", AAMIO_SCOPE_KEY_MIN, AAMIO_SCOPE_KEY_MAX)
 
     return _b32_address(_sha256((SCOPE_PREFIX + scope_key).encode("utf-8")))
 
@@ -219,12 +249,7 @@ def sign_input(w, body):
     string. Signing anything else gives a signature the service refuses, and the
     refusal cannot tell you which of the two you got wrong.
     """
-    if not isinstance(w, str) or len(w) != AAMIO_ADDRESS_LEN:
-        raise LengthError("an address is %d characters" % AAMIO_ADDRESS_LEN)
-
-    for character in w:
-        if character not in _B32:
-            raise EncodingError("not a base32 address: %r" % character)
+    check_address(w)
 
     digest = _hex(_sha256(_as_bytes(body, "the body")))
 
@@ -289,8 +314,12 @@ def is_sealed(body):
     if not isinstance(body, str):
         return False
 
-    # Cheap first: an envelope names itself, and most bodies do not contain this.
-    if '"e2ee"' not in body:
+    # Cheap first, and safe: an object starts with a brace, whatever its fields
+    # are called. This used to look for the text "e2ee" before parsing, and a
+    # field written as "\u00652ee" decodes to the same name and was missed, so
+    # an envelope spelled that way went to whatever acts on messages. Field
+    # names are read after decoding, or they are not read at all.
+    if body.lstrip()[:1] != "{":
         return False
 
     try:
@@ -342,6 +371,244 @@ def sender_is_allowed(message, w, allow, verify):
 
     return bool(verify(b64url_decode(sender, 32), b64url_decode(signature, 64),
                        signed_bytes_of(message, w)))
+
+
+# Where the walk is, so a separator can be judged by what came before it. The
+# same five states as the C, and the same reason: balanced brackets are not a
+# grammar, and a trailing comma, a double comma and two names with no comma
+# between them are all balanced.
+_AT_START = 0
+_AT_OPEN = 1
+_AT_VALUE = 2
+_AT_COMMA = 3
+_AT_COLON = 4
+# A string in an object is a name or a value. A name is followed by a colon and
+# by nothing else.
+_AT_NAME = 5
+# Deeper than a service answer ever goes. Deeper is refused rather than guessed at.
+JSON_MAX_DEPTH = 30
+
+_JSON_SPACE = " \t\r\n"
+_JSON_ENDS_SCALAR = ",]} \t\r\n"
+_JSON_ESCAPES = '"\\/bfnrt'
+_JSON_HEX = "0123456789abcdefABCDEF"
+
+
+def _string_end(text, at):
+    """The index past the closing quote of the string opening at `at`, or a refusal.
+
+    An escape has to be one of JSON's eight, or \\u and four hex digits, and a
+    control character has to be escaped. MicroPython's json.loads takes "\\q" as
+    the letter q, CPython's refuses it: the document is not JSON either way, and
+    a reader that moved the cursor on it moved it on an answer from a service
+    that sent nothing of the kind.
+    """
+    end = len(text)
+    i = at + 1
+
+    while i < end:
+        character = text[i]
+
+        if character == '"':
+            return i + 1
+
+        if ord(character) < 0x20:
+            raise EncodingError("a control character inside a string")
+
+        if character == "\\":
+            i += 1
+
+            if i >= end:
+                break
+
+            if text[i] == "u":
+                if i + 4 >= end:
+                    break
+
+                for digit in text[i + 1:i + 5]:
+                    if digit not in _JSON_HEX:
+                        raise EncodingError("not a JSON escape: \\u%s" % text[i + 1:i + 5])
+
+                i += 4
+            elif text[i] not in _JSON_ESCAPES:
+                raise EncodingError("not a JSON escape: \\%s" % text[i])
+
+        i += 1
+
+    raise EncodingError("a string that never closes")
+
+
+def _is_json_number(token):
+    """-?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?, and nothing before or after."""
+    end = len(token)
+    i = 0
+
+    if i < end and token[i] == "-":
+        i += 1
+
+    if i >= end:
+        return False
+
+    if token[i] == "0":
+        i += 1
+    elif "1" <= token[i] <= "9":
+        while i < end and "0" <= token[i] <= "9":
+            i += 1
+    else:
+        return False
+
+    if i < end and token[i] == ".":
+        i += 1
+        start = i
+
+        while i < end and "0" <= token[i] <= "9":
+            i += 1
+
+        if i == start:
+            return False
+
+    if i < end and token[i] in "eE":
+        i += 1
+
+        if i < end and token[i] in "+-":
+            i += 1
+
+        start = i
+
+        while i < end and "0" <= token[i] <= "9":
+            i += 1
+
+        if i == start:
+            return False
+
+    return i == end
+
+
+def _scalar_end(text, at):
+    """The index past the literal or number starting at `at`, or a refusal.
+
+    A bare word where a value belongs used to run on as one: messages:[garbage]
+    was balanced, and so was next:041. true, false, null and a number in JSON's
+    own grammar are values; nothing else is.
+    """
+    end = len(text)
+    i = at
+
+    while i < end and text[i] not in _JSON_ENDS_SCALAR:
+        i += 1
+
+    token = text[at:i]
+
+    if token in ("true", "false", "null") or _is_json_number(token):
+        return i
+
+    raise EncodingError("not a JSON value: %r" % token[:20])
+
+
+def json_whole(text):
+    """Raises unless `text` is one complete JSON object and nothing else.
+
+    json.loads is not the same parser on every runtime. MicroPython's takes an
+    escape that is not JSON's and a number with a leading zero, and CPython's
+    refuses both; an answer that reads differently on two boards is not an answer
+    either can act on. This is the C core's check in Python, run before json.loads
+    is asked, so that what is refused is refused everywhere, and the same corpus
+    of refusals in testdata/answers.json runs against both.
+
+    A body cut off by a full buffer or a dropped connection looks like an answer
+    for as far as it goes; this is also where that is caught.
+    """
+    if not isinstance(text, str):
+        raise ArgError("an answer is text")
+
+    end = len(text)
+    i = 0
+
+    while i < end and text[i] in _JSON_SPACE:
+        i += 1
+
+    if i >= end or text[i] != "{":
+        raise EncodingError("the answer is not an object")
+
+    # True for an object, False for an array, innermost last: the C keeps the
+    # same thing as a bitmask.
+    objects = []
+    was = _AT_START
+    closed = False
+
+    while i < end:
+        character = text[i]
+
+        if character in _JSON_SPACE:
+            i += 1
+            continue
+
+        if closed:
+            raise EncodingError("something after the object")
+
+        if character == '"':
+            if was not in (_AT_OPEN, _AT_COMMA, _AT_COLON):
+                raise EncodingError("a string where none may stand")
+
+            # Inside an object, a string where a value may not yet stand is the
+            # name of the pair. Inside an array there are no names.
+            naming = objects[-1] and was in (_AT_OPEN, _AT_COMMA)
+
+            if not naming and was != _AT_COLON and objects[-1]:
+                raise EncodingError("a value with no name before it")
+
+            i = _string_end(text, i)
+            was = _AT_NAME if naming else _AT_VALUE
+            continue
+
+        if character in "{[":
+            if was not in (_AT_START, _AT_OPEN, _AT_COMMA, _AT_COLON):
+                raise EncodingError("an object or a list where none may stand")
+
+            if len(objects) >= JSON_MAX_DEPTH:
+                raise EncodingError("nested deeper than %d" % JSON_MAX_DEPTH)
+
+            objects.append(character == "{")
+            was = _AT_OPEN
+        elif character in "}]":
+            if was in (_AT_COMMA, _AT_COLON, _AT_NAME):
+                raise EncodingError("a bracket closing on a separator")
+
+            # A brace closing a bracket is not a deeper object; it is a different
+            # document, and one of the two shapes is not what the caller read.
+            if (character == "}") != objects[-1]:
+                raise EncodingError("brackets that cross")
+
+            objects.pop()
+
+            if not objects:
+                closed = True
+
+            was = _AT_VALUE
+        elif character == ",":
+            if was != _AT_VALUE:
+                raise EncodingError("a comma with no value before it")
+
+            was = _AT_COMMA
+        elif character == ":":
+            if was != _AT_NAME:
+                raise EncodingError("a colon with no name before it")
+
+            was = _AT_COLON
+        else:
+            # A number or a literal. Inside an object that is after a colon only:
+            # a bare literal where a name belongs is not a pair.
+            if was != _AT_COLON and (objects[-1] or was not in (_AT_OPEN, _AT_COMMA)):
+                raise EncodingError("a value where none may stand")
+
+            i = _scalar_end(text, i)
+            was = _AT_VALUE
+            continue
+
+        i += 1
+
+    if not closed:
+        raise EncodingError("an object that never closes")
 
 
 def _boolean(answer, name):
@@ -419,14 +686,21 @@ class Session:
         caller who was told to read the same thing reading something else.
         """
         if isinstance(body, (bytes, bytearray)):
-            body = bytes(body).decode("utf-8")
+            try:
+                body = bytes(body).decode("utf-8")
+            except (ValueError, UnicodeError):
+                raise EncodingError("the answer is not UTF-8")
 
         if not isinstance(body, str):
             raise ArgError("an answer is text or bytes")
 
+        # Whole, first, and by this module's own grammar rather than the runtime's:
+        # a body cut off by a full buffer reads fine as far as it goes, and its
+        # fields moved the cursor past messages that never came; and json.loads on
+        # MicroPython takes what CPython's refuses. See json_whole.
+        json_whole(body)
+
         try:
-            # Whole, first. A body cut off by a full buffer reads fine as far as it
-            # goes, and its fields moved the cursor past messages that never came.
             answer = json.loads(body)
         except (ValueError, TypeError):
             raise EncodingError("the answer is not whole JSON")
@@ -453,6 +727,22 @@ class Session:
 
             messages = answer["messages"]
 
+            # Each one an object with a sequence number that counts forwards and a
+            # body that is text, and all of them before the cursor moves past any.
+            # messages:[null] came back as [None], moved the cursor, and act(None)
+            # failed on the first attribute it touched, with the message gone.
+            # The hash is body_of's to check, since it is checked per message
+            # and reported per message; what is checked here is that there is a
+            # message to check.
+            for message in messages:
+                if not isinstance(message, dict):
+                    raise EncodingError("a message is an object, and one of these is not")
+
+                _counting_number(message, "seq")
+
+                if not isinstance(message.get("body"), str):
+                    raise EncodingError("a message has a body that is text, and one of these has not")
+
             if "more" in answer:
                 more = _boolean(answer, "more")
 
@@ -477,7 +767,18 @@ class Session:
             if "next" in answer:
                 next_cursor = _counting_number(answer, "next")
 
-            has_reset = "reset" in answer
+            # A reset is an object with the after that was sent and the newest there
+            # is; that is the documented shape, and the presence of the name used to
+            # be the whole signal, so reset:false let the cursor go backwards.
+            if "reset" in answer:
+                inner = answer["reset"]
+
+                if not isinstance(inner, dict):
+                    raise EncodingError("reset is an object with after and newest, or it is not a reset")
+
+                _counting_number(inner, "after")
+                _counting_number(inner, "newest")
+                has_reset = True
 
         # Everything checked. From here the session changes and nothing can fail.
         self.more = False

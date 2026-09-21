@@ -15,9 +15,17 @@
  *
  * The good answers at the bottom are here so that the refusals above cannot be
  * bought by refusing everything.
+ *
+ * The deep health check of 21 September 2026 found more: a bare word where a
+ * value belongs, an escape that is not JSON's, a message that is null, and
+ * reset:false read as a reset, all moving the cursor. Those and their kin are in
+ * testdata/answers.json, the one corpus the Python suites read too, and arrive
+ * here through the generated answers.h. A case that is only in one suite is a
+ * difference between the runtimes that nobody is told about.
  */
 
 #include "../examples/sensor/session.h"
+#include "answers.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -37,14 +45,15 @@ static void check(int good, const char *what, const char *saw)
     }
 }
 
-/* A session mid-conversation: a cursor, a message left unread, more to come. */
+/* A session mid-conversation: a cursor, a message left unread, more to come.
+ * The numbers are the corpus's, so its answers mean here what they mean there. */
 static void arrange(aamio_session *session)
 {
     aamio_session_open(session, "abcdefghijklmnopqrstuvwxyz", 26);
-    session->after = 40;
-    session->more = 1;
-    session->left_unread = 7;
-    session->left_bytes = 70000;
+    session->after = CORPUS_AFTER;
+    session->more = CORPUS_MORE;
+    session->left_unread = CORPUS_LEFT_UNREAD;
+    session->left_bytes = CORPUS_LEFT_BYTES;
     session->gone = 0;
 }
 
@@ -81,6 +90,7 @@ int main(void)
 {
     aamio_session session;
     int carried;
+    size_t which;
 
     printf("\nan answer this session will not believe\n");
 
@@ -140,7 +150,7 @@ int main(void)
 
     arrange(&session);
     carried = took(&session,
-        "{\"exists\":true,\"messages\":[{\"seq\":41}],\"next\":41,\"more\":true}");
+        "{\"exists\":true,\"messages\":[{\"seq\":41,\"body\":\"x\"}],\"next\":41,\"more\":true}");
     check(carried == 1 && session.more == 1 && session.after == 41,
           "one message, and more says to read again at once", NULL);
 
@@ -159,6 +169,24 @@ int main(void)
     check(session.after == 0,
           "and the cursor goes with it: a new thread here counts from one, and the old number would skip its first messages",
           NULL);
+
+    /* The corpus shared with the Python suites: testdata/answers.json, through
+     * answers.h. Every refusal leaves the session untouched, byte for byte, and
+     * every answer taken lands where the corpus says. */
+    printf("\nthe shared corpus, refused without a byte of the session changing\n");
+
+    for (which = 0; which < sizeof CORPUS_REFUSED / sizeof CORPUS_REFUSED[0]; which++) {
+        refuses(CORPUS_REFUSED[which].answer, CORPUS_REFUSED[which].what);
+    }
+
+    printf("\nand taken, so that refusing everything cannot pass\n");
+
+    for (which = 0; which < sizeof CORPUS_TAKEN / sizeof CORPUS_TAKEN[0]; which++) {
+        arrange(&session);
+        carried = took(&session, CORPUS_TAKEN[which].answer);
+        check(carried == CORPUS_TAKEN[which].messages && session.after == CORPUS_TAKEN[which].after,
+              CORPUS_TAKEN[which].what, carried < 0 ? "refused" : "taken, but not as the corpus says");
+    }
 
     printf("\n%d passed, %d failed\n", checks - failures, failures);
 

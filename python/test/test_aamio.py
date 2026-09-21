@@ -17,7 +17,12 @@ sys.path.insert(0, os.path.dirname(HERE))
 
 import aamio  # noqa: E402
 
+sys.path.insert(0, HERE)
+
+import http_checks  # noqa: E402
+
 VECTORS = os.path.join(os.path.dirname(os.path.dirname(HERE)), "testdata", "vectors.json")
+CORPUS = os.path.join(os.path.dirname(os.path.dirname(HERE)), "testdata", "answers.json")
 
 passed = 0
 failed = 0
@@ -127,6 +132,34 @@ check(aamio.is_sealed(v["envelopeFromAToB"]) is True,
 check(aamio.is_sealed(payload) is False, "and plain text does not")
 check(aamio.is_sealed('{"e2ee":"nacl.box.v1"}') is False,
       "nor does an object that names the format and carries no ciphertext")
+
+print("a sealed envelope, however its fields are spelled")
+# The name used to be looked for as text before parsing, so "\u00652ee", which
+# decodes to the same name, was not seen. Health check, 21 September 2026.
+check(aamio.is_sealed('{"\\u00652ee":"nacl.box.v1","ct":"x","nonce":"y"}') is True,
+      "an envelope whose e2ee is written as a unicode escape is still one")
+check(aamio.is_sealed('{"ct":"x","nonce":"y","e2ee":"nacl.box.v1"}') is True, "in any field order")
+check(aamio.is_sealed(' \n{ "e2ee" : "nacl.box.v1" , "ct" : "x" , "nonce" : "y" }') is True,
+      "and with whitespace wherever JSON allows it")
+check(aamio.is_sealed('"e2ee"') is False, "a string that merely says the word is not one")
+check(aamio.is_sealed('[{"e2ee":"nacl.box.v1","ct":"x","nonce":"y"}]') is False, "and a list is not one")
+
+print("what a key is made of")
+# The length was checked and the alphabet was not, so every one of these derived an
+# address from a key the service refuses. The C refused them all. Health check, F6.
+for what, bad in (("a capital letter", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+                  ("a hyphen", "abcdefghijklm-opqrstuvwxyz"),
+                  ("a letter outside ASCII", "abcdefghijklmnopqrstuvwxy\u00e9"),
+                  ("a carriage return and a line feed", "abcdefghijklmnopqrstuvwx\r\n"),
+                  ("a space", "abcdefghijklmnopqrstuvwxy ")):
+    refuses(lambda: aamio.address(bad), "a read key with %s" % what, aamio.EncodingError)
+    refuses(lambda: aamio.scope_address(bad), "a scope key with %s" % what, aamio.EncodingError)
+    refuses(lambda: aamio.Session(bad), "and a session opened on it", aamio.EncodingError)
+
+refuses(lambda: aamio.check_address("OHCIBX4T22XC6HX22FCH"), "an address in capitals", aamio.EncodingError)
+refuses(lambda: aamio.check_address(v["w"][:-1]), "an address one short", aamio.LengthError)
+aamio.check_address(v["w"])
+check(True, "and the address from the vectors is one")
 check(aamio.signed_bytes_of(whole, v["w"]) == aamio.sign_input(v["w"], payload),
       "the bytes a message's signature covers are the same ninety-four")
 refuses(lambda: aamio.sender_is_allowed(whole, v["w"], [v["a"]["public"]], None),
@@ -148,13 +181,13 @@ check(s.w == v["w"], "opening derives the address")
 check(s.read_path() == "/" + v["w"], "the first read has no cursor in it")
 check(s.write_path() == "/" + v["w"], "and a write goes to the address itself")
 
-got = s.take_answer('{"exists":true,"messages":[{"seq":1},{"seq":2}],"next":2}')
+got = s.take_answer('{"exists":true,"messages":[{"seq":1,"body":"one"},{"seq":2,"body":"two"}],"next":2}')
 check(len(got) == 2 and got[1]["seq"] == 2, "two messages come back as they were")
 check(s.after == 2, "and the cursor followed next")
 check(s.read_path() == "/" + v["w"] + "/after/2", "so the next read asks past them")
 check(s.more is False and s.gone is False, "nothing else moved")
 
-s.take_answer('{"exists":true,"messages":[{"seq":3}],"next":3,"more":true}')
+s.take_answer('{"exists":true,"messages":[{"seq":3,"body":"three"}],"next":3,"more":true}')
 check(s.more is True, "more says the answer was cut short")
 
 print("the session, a message it cannot take")
@@ -175,12 +208,12 @@ s = aamio.Session(v["id"])
 s.take_answer('{"exists":true,"messages":[],"next":9}')
 s.take_answer('{"exists":true,"messages":[],"next":2}')
 check(s.after == 9, "a lower next on its own is not a cursor to follow")
-s.take_answer('{"exists":true,"messages":[],"next":2,"reset":true}')
-check(s.after == 2, "but a lower one after a reset is the one to keep")
+s.take_answer('{"exists":true,"messages":[],"next":2,"reset":{"after":9,"newest":2,"what":"an earlier thread"}}')
+check(s.after == 2, "but a lower one after a reset, in its documented shape, is the one to keep")
 
 print("the session, answers it refuses")
 s = aamio.Session(v["id"])
-s.take_answer('{"exists":true,"messages":[{"seq":1}],"next":1}')
+s.take_answer('{"exists":true,"messages":[{"seq":1,"body":"one"}],"next":1}')
 unchanged(s, "an answer cut off by a full buffer",
           '{"exists":true,"messages":[{"seq":2}],"next":2')
 unchanged(s, "an answer with no exists at all", '{"messages":[],"next":77}')
@@ -199,6 +232,108 @@ unchanged(s, "a too_large seq that counts backwards",
 unchanged(s, "an answer that is an array", '[{"exists":true}]')
 check(s.after == 1, "and after all of that the cursor is still where it was")
 
+print("the shared corpus, testdata/answers.json")
+# The same file the C suite reads through answers.h. Every refusal leaves the
+# session untouched, and every answer taken lands where the corpus says.
+with open(CORPUS, encoding="utf-8") as handle:
+    corpus = json.load(handle)
+
+
+def arranged():
+    """A session mid-conversation, as the corpus describes it and the C suite arranges it."""
+    session = aamio.Session(v["id"])
+    session.after = corpus["before"]["after"]
+    session.more = corpus["before"]["more"]
+    session.left_unread = corpus["before"]["left_unread"]
+    session.left_bytes = corpus["before"]["left_bytes"]
+
+    return session
+
+
+for entry in corpus["refused"]:
+    unchanged(arranged(), entry["what"], entry["answer"])
+
+for entry in corpus["taken"]:
+    s = arranged()
+
+    try:
+        got = s.take_answer(entry["answer"])
+        check(len(got) == entry["messages"] and s.after == entry["after"], entry["what"])
+    except aamio.AamioError as wrong:
+        check(False, entry["what"] + " (refused: %s)" % wrong)
+
+print("the transport, with no network")
+import aamio_http  # noqa: E402
+
+http_checks.run(check)
+
+print("the desktop transport")
+import ssl  # noqa: E402
+import urllib.request  # noqa: E402
+import urllib.response  # noqa: E402
+import http.client  # noqa: E402
+import io  # noqa: E402
+
+desktop = aamio_http.Http()
+check(isinstance(desktop.transport, aamio_http._Urllib),
+      "CPython gets urllib, whatever else is installed beside it")
+check(desktop.transport.context.verify_mode == ssl.CERT_REQUIRED and desktop.transport.context.check_hostname,
+      "with a certificate required and the name checked")
+check(any(isinstance(handler, desktop.transport.redirects) for handler in desktop.transport.opener.handlers)
+      and not any(type(handler) is urllib.request.HTTPRedirectHandler
+                  for handler in desktop.transport.opener.handlers),
+      "and a redirect handler that declines, in place of the one that follows")
+
+
+class Served(urllib.request.BaseHandler):
+    """Answers every https request from memory, ahead of the real handler, and records each."""
+
+    handler_order = 100
+
+    def __init__(self, status, body, location=None):
+        self.status = status
+        self.body = body
+        self.location = location
+        self.urls = []
+
+    def https_open(self, request):
+        self.urls.append(request.full_url)
+        headers = http.client.HTTPMessage()
+        headers["Content-Length"] = str(len(self.body))
+
+        if self.location is not None:
+            headers["Location"] = self.location
+
+        answer = urllib.response.addinfourl(io.BytesIO(self.body), headers, request.full_url, self.status)
+        answer.msg = "Served"
+
+        return answer
+
+
+# A fresh Http each time: a handler once added answers every later request too.
+for status in (301, 302, 303, 307, 308):
+    served = Served(status, b"", "http://redirect.invalid/leak")
+    desktop = aamio_http.Http()
+    desktop.transport.opener.add_handler(served)
+    session = aamio.Session(v["id"])
+
+    try:
+        desktop.read(session)
+        check(False, "urllib followed a %d" % status)
+    except aamio_http.Redirected as refused:
+        check(refused.status == status and served.urls == ["https://aamio.at/" + v["w"]],
+              "a %d through urllib is refused, with one request made and none to where it pointed" % status)
+
+served = Served(200, b'{"exists":true,"messages":[],"next":1,"pad":"' + b"x" * 6000 + b'"}')
+desktop = aamio_http.Http()
+desktop.transport.opener.add_handler(served)
+
+try:
+    desktop.read(aamio.Session(v["id"]), max_bytes=512)
+    check(False, "urllib read an answer past the ceiling")
+except aamio_http.Oversize:
+    check(True, "an answer past the ceiling through urllib is refused")
+
 print("nothing the two runtimes lack")
 # These tests run on CPython, where everything works. That is exactly why this
 # check exists: an f-string or a three-argument getattr passes here and fails on
@@ -206,8 +341,12 @@ print("nothing the two runtimes lack")
 import ast  # noqa: E402
 
 BANNED = {ast.JoinedStr: "an f-string", ast.AsyncFunctionDef: "async def"}
-SAFE_IMPORTS = ("hashlib", "adafruit_hashlib", "json", "ujson", "time",
-                "urequests", "requests", "urllib.error", "urllib.request",
+# urequests and requests are not here on purpose: the one MicroPython finds
+# verifies no certificate, and an import of either is the fallback coming back.
+# socket and tls are MicroPython's and are imported only inside Tls, which is
+# for MicroPython; ssl and urllib are imported only inside the desktop paths.
+SAFE_IMPORTS = ("hashlib", "adafruit_hashlib", "json", "ujson", "time", "sys",
+                "socket", "tls", "ssl", "urllib.error", "urllib.request",
                 "aamio", "aamio_http")
 
 for name in ("aamio.py", "aamio_http.py", "examples/sensor.py"):

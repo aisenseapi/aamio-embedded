@@ -138,7 +138,11 @@ int aamio_json_number(const char *json, size_t len, const char *name, long *out)
  *
  * A body cut off by a full buffer or a dropped connection looks like an answer for as
  * far as it goes, and the fields before the cut read fine. Believing those moved a
- * cursor past messages that were never delivered. Check first, believe after. */
+ * cursor past messages that were never delivered. Check first, believe after.
+ *
+ * Strings, escapes, literals and numbers are held to JSON's grammar since 21
+ * September 2026: balanced brackets were not a grammar, and messages:[garbage] and
+ * an escape like \q both read as answers until then. UTF-8 is not checked. */
 int aamio_json_whole(const char *json, size_t len);
 
 #ifdef __cplusplus

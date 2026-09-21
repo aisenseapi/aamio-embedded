@@ -110,45 +110,6 @@ int aamio_session_read_path(const aamio_session *session, char *out, size_t out_
     return AAMIO_OK;
 }
 
-/* How many messages the array holds, counted by its top-level objects. */
-static int count_messages(const char *json, size_t len)
-{
-    const char *value = NULL;
-    size_t value_len = 0;
-    size_t i;
-    int depth = 0;
-    int in_string = 0;
-    int messages = 0;
-
-    if (aamio_json_field(json, len, "messages", &value, &value_len) != AAMIO_OK) {
-        return 0;
-    }
-
-    for (i = 0; i < value_len; i++) {
-        char c = value[i];
-
-        if (in_string) {
-            if (c == '\\') {
-                i++;
-            } else if (c == '"') {
-                in_string = 0;
-            }
-        } else if (c == '"') {
-            in_string = 1;
-        } else if (c == '{') {
-            if (depth == 0) {
-                messages++;
-            }
-
-            depth++;
-        } else if (c == '}') {
-            depth--;
-        }
-    }
-
-    return messages;
-}
-
 /* One field, required to be there and to be the kind of thing it should be.
  * A reader that strips the quotes cannot tell true from "true", so the type
  * is asked for and compared: exists:"true" was read as a thread that exists
@@ -188,6 +149,111 @@ static int boolean_of(const char *json, size_t len, const char *name, int *out)
     }
 
     return 0;
+}
+
+/* A number that counts forwards, in a field that is a number and not a string
+ * wearing one. bytes:"7" used to be taken as 7: the field reader strips the
+ * quotes, so the type has to be asked for as well. */
+static int counting_number_of(const char *json, size_t len, const char *name, long *out)
+{
+    const char *value = NULL;
+    size_t value_len = 0;
+
+    return field_of_kind(json, len, name, AAMIO_JSON_NUMBER, &value, &value_len)
+           && aamio_json_number(json, len, name, out) == AAMIO_OK
+           && *out >= 0;
+}
+
+/* The messages, each of them the shape of a message, and how many there are.
+ * Each has to be an object with a seq that counts forwards and a body that is
+ * text, and that has to hold for all of them before the cursor moves past any:
+ * messages:[null] counted as none and moved the cursor, and messages:[7] the
+ * same, so what the service said it delivered was marked read unseen. The
+ * array itself has been through aamio_json_whole, so the walk here can trust
+ * the brackets and the strings and look only at what each element is. */
+static int messages_are_shaped(const char *list, size_t len, int *count)
+{
+    size_t i = 1;   /* past the opening bracket */
+    int found = 0;
+
+    for (;;) {
+        const char *value = NULL;
+        size_t value_len = 0;
+        size_t from;
+        int depth = 0;
+        int quoted = 0;
+        long seq = 0;
+
+        while (i < len && (list[i] == ' ' || list[i] == '\n' || list[i] == '\r' || list[i] == '\t')) {
+            i++;
+        }
+
+        if (i >= len) {
+            return 0;
+        }
+
+        if (list[i] == ']') {
+            break;
+        }
+
+        /* null, a number, a string, a list: not a message. */
+        if (list[i] != '{') {
+            return 0;
+        }
+
+        from = i;
+
+        for (; i < len; i++) {
+            char c = list[i];
+
+            if (quoted) {
+                if (c == '\\') {
+                    i++;
+                } else if (c == '"') {
+                    quoted = 0;
+                }
+
+                continue;
+            }
+
+            if (c == '"') {
+                quoted = 1;
+            } else if (c == '{' || c == '[') {
+                depth++;
+            } else if (c == '}' || c == ']') {
+                depth--;
+
+                if (depth == 0) {
+                    i++;
+
+                    break;
+                }
+            }
+        }
+
+        if (depth != 0) {
+            return 0;
+        }
+
+        if (!counting_number_of(list + from, i - from, "seq", &seq)
+            || !field_of_kind(list + from, i - from, "body", AAMIO_JSON_STRING, &value, &value_len)) {
+            return 0;
+        }
+
+        found++;
+
+        while (i < len && (list[i] == ' ' || list[i] == '\n' || list[i] == '\r' || list[i] == '\t')) {
+            i++;
+        }
+
+        if (i < len && list[i] == ',') {
+            i++;
+        }
+    }
+
+    *count = found;
+
+    return 1;
 }
 
 int aamio_session_take_answer(aamio_session *session, const char *json, size_t len)
@@ -231,7 +297,8 @@ int aamio_session_take_answer(aamio_session *session, const char *json, size_t l
         /* A required field has a shape as well as a name. messages as a number is
          * well formed JSON and not an answer, and it was enough to move the cursor.
          * An answer that says the thread is gone carries none. */
-        if (!field_of_kind(json, len, "messages", AAMIO_JSON_ARRAY, &value, &value_len)) {
+        if (!field_of_kind(json, len, "messages", AAMIO_JSON_ARRAY, &value, &value_len)
+            || !messages_are_shaped(value, value_len, &messages)) {
             return AAMIO_E_ENCODING;
         }
 
@@ -247,18 +314,13 @@ int aamio_session_take_answer(aamio_session *session, const char *json, size_t l
             const char *inner = NULL;
             size_t inner_len = 0;
 
-            const char *at_seq = NULL;
-            size_t seq_len = 0;
-
             if (!field_of_kind(json, len, "too_large", AAMIO_JSON_OBJECT, &inner, &inner_len)
-                || !field_of_kind(inner, inner_len, "seq", AAMIO_JSON_NUMBER, &at_seq, &seq_len)
-                || aamio_json_number(inner, inner_len, "seq", &seq) != AAMIO_OK
-                || seq < 0) {
+                || !counting_number_of(inner, inner_len, "seq", &seq)) {
                 return AAMIO_E_ENCODING;
             }
 
             if (aamio_json_field(inner, inner_len, "bytes", &value, &value_len) == AAMIO_OK
-                && (aamio_json_number(inner, inner_len, "bytes", &bytes) != AAMIO_OK || bytes < 0)) {
+                && !counting_number_of(inner, inner_len, "bytes", &bytes)) {
                 return AAMIO_E_ENCODING;
             }
         }
@@ -277,8 +339,23 @@ int aamio_session_take_answer(aamio_session *session, const char *json, size_t l
             has_next = 1;
         }
 
-        has_reset = aamio_json_field(json, len, "reset", &value, &value_len) == AAMIO_OK;
-        messages = count_messages(json, len);
+        /* A reset is an object with the after that was sent and the newest there
+         * is: that is the documented shape. The presence of the name used to be
+         * the whole signal, so reset:false let the cursor go backwards. */
+        if (aamio_json_field(json, len, "reset", &value, &value_len) == AAMIO_OK) {
+            const char *inner = NULL;
+            size_t inner_len = 0;
+            long after = 0;
+            long newest = 0;
+
+            if (!field_of_kind(json, len, "reset", AAMIO_JSON_OBJECT, &inner, &inner_len)
+                || !counting_number_of(inner, inner_len, "after", &after)
+                || !counting_number_of(inner, inner_len, "newest", &newest)) {
+                return AAMIO_E_ENCODING;
+            }
+
+            has_reset = 1;
+        }
     }
 
     /* Everything checked. From here the session changes and nothing can fail. */
