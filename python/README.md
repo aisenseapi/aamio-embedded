@@ -219,9 +219,10 @@ MicroPython" is a run and not an argument. On 20 September 2026 it passed under
 MicroPython 1.25.0, the unix port, including `--live`: that runtime opened a
 thread on aamio.at through its own mbedtls, wrote to it and read it back -- over
 micropython-lib's `requests`, which checked no certificate, as the health check
-found the next day. The transport was replaced on 21 September and the suite,
-now with the shared answer corpus and the transport checks in it, has not been
-run under MicroPython since.
+found the next day. The transport was replaced on 21 September, and the suite,
+now with the shared answer corpus and the transport checks in it, ran under the
+unix port of MicroPython 1.25.0 on 24 September, against instrumented sockets
+and not the live service.
 
 `live_signed.py` walks the signing path the rest of this file describes: the
 ninety-four bytes, the base64url pair, `X-Key` and `X-Sig`, into an inbox that

@@ -21,6 +21,13 @@ port of MicroPython 1.25.0 for the first time since the transport was rebuilt.
   39 bytes of JSON that parsed was taken as complete, and the cursor moved. A
   connection that closes with body still owed is refused, and so is a
   Content-Length below zero.
+- **E2, two Content-Length headers that disagreed were a length.** The last
+  one won, and the check above measured against it. Two that disagree are
+  refused; two that agree are one. Found the same evening.
+- **E1, the end of an answer could come late.** A close-delimited answer whose
+  last byte and EOF arrived after the deadline was taken, since the clock was
+  read after each piece and never when the answer ended. It is read once more
+  at the end.
 
 ## 2026-09-21, six findings from the deep health check
 

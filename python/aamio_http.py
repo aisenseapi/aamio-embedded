@@ -197,6 +197,13 @@ def _collect(answer, status, ceiling, timeout):
         if _elapsed(started) > timeout:
             raise OSError("the answer did not arrive within %d seconds" % timeout)
 
+    # And once more when the answer ends, since the end can come late as well:
+    # a close-delimited answer whose last byte and EOF arrived after the
+    # deadline was taken, because the clock was read only after each piece.
+    # E1 of the health check of 24 September 2026.
+    if _elapsed(started) > timeout:
+        raise OSError("the answer did not end within %d seconds" % timeout)
+
     raw = b"".join(parts)
 
     try:
@@ -430,12 +437,20 @@ class Tls:
 
             if name == b"content-length":
                 try:
-                    length = int(str(value, "utf-8"))
+                    declared = int(str(value, "utf-8"))
                 except ValueError:
                     raise OSError("a Content-Length that is not a number")
 
-                if length < 0:
+                if declared < 0:
                     raise OSError("a Content-Length below zero")
+
+                # Two that disagree are not a length at all. The last one used
+                # to win, and what arrived was measured against it. RFC 9112
+                # allows a repeat only with the same value. E2 of the same check.
+                if length is not None and length != declared:
+                    raise OSError("two Content-Length headers that disagree: %d and %d" % (length, declared))
+
+                length = declared
             elif name == b"transfer-encoding" and b"chunked" in value.lower():
                 # HTTP/1.0 was asked for, and a 1.0 client is never sent chunks.
                 # A peer that does so is not talking to this client.

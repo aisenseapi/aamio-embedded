@@ -11,8 +11,9 @@ device.
 There is a Python module beside it, in `python/`, for MicroPython and
 CircuitPython. MicroPython 1.25.0 ran it on a desktop on 20 September, and read
 the live service through a transport that, it turned out, checked no
-certificate; that transport was replaced on 21 September and the module has not
-been run under MicroPython since. It has **not** been run on a board.
+certificate; that transport was replaced on 21 September, and the unix port of
+MicroPython 1.25.0 ran the portable suite with the new one on 24 September,
+against instrumented sockets. It has **not** been run on a board.
 
 ## What it is, and what it deliberately is not
 

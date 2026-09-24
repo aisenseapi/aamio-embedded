@@ -207,6 +207,23 @@ def run(check):
     except OSError:
         check(sockets.sockets[0].closed, "and a Content-Length below zero is refused")
 
+    # E2 of the health check of 24 September 2026: the last of two lengths won,
+    # and the check on what arrived measured against it.
+    body = b'{"exists":true,"messages":[],"next":41}'
+    sockets = fakes.Sockets([b"HTTP/1.1 200 OK\r\nContent-Length: 999\r\nContent-Length: 39\r\n\r\n" + body])
+    http = aamio_http.Http(aamio_http.Tls(b"DER", sockets=sockets, tls=fakes.TlsModule()))
+
+    try:
+        session.take_answer(http.read(session))
+        check(False, "two Content-Length headers that disagree were taken")
+    except OSError:
+        check(session.after == 40 and sockets.sockets[0].closed,
+              "two Content-Length headers that disagree are refused, the socket closed and the cursor unmoved")
+
+    sockets = fakes.Sockets([b"HTTP/1.1 200 OK\r\nContent-Length: 39\r\nContent-Length: 39\r\n\r\n" + body])
+    http = aamio_http.Http(aamio_http.Tls(b"DER", sockets=sockets, tls=fakes.TlsModule()))
+    check(http.read(session) == body.decode("utf-8"), "and two that agree are one length")
+
     # N4 of the same check: the clock started with the body, and a peer that
     # dripped one header byte inside every socket wait held the device for as
     # long as it liked. The clock is faked, so the wait is not real.
@@ -246,6 +263,41 @@ def run(check):
             check(Drip.reads <= 4 and clock[0] < 0.05 and session.after == 40 and sockets.sockets[0].closed,
                   "headers that drip in past the timeout are given up on within it: %d reads, %.3f s, cursor unmoved, closed"
                   % (Drip.reads, clock[0]))
+    finally:
+        aamio_http._clock, aamio_http._elapsed = real_clock, real_elapsed
+
+    # E1 of the same check: a close-delimited answer arrived whole and in time,
+    # and its end, the EOF, came after the deadline; it was taken, since the
+    # clock was read only after each piece and never at the end.
+    class LateEnd(fakes.Socket):
+        def read(self, size):
+            clock[0] += 0.003 if self.served else 0.011
+
+            return fakes.Socket.read(self, size)
+
+    class LateEndSockets(fakes.Sockets):
+        def socket(self, family, kind, proto):
+            made = LateEnd(self, family, kind, proto)
+            made.served = self.answers.pop(0)
+            self.sockets.append(made)
+
+            return made
+
+    clock = [0.0]
+    aamio_http._clock = lambda: clock[0]
+    aamio_http._elapsed = lambda since: clock[0] - since
+    sockets = LateEndSockets([b"HTTP/1.0 200 OK\r\n\r\n" + b'{"exists":true,"messages":[],"next":41}'])
+    session = _session(40)
+
+    try:
+        http = aamio_http.Http(aamio_http.Tls(b"DER", sockets=sockets, tls=fakes.TlsModule()), timeout=0.010)
+
+        try:
+            session.take_answer(http.read(session))
+            check(False, "an answer whose end came after the deadline was taken")
+        except OSError:
+            check(session.after == 40 and sockets.sockets[0].closed,
+                  "an answer whose end comes after the deadline is refused, the cursor unmoved and the socket closed")
     finally:
         aamio_http._clock, aamio_http._elapsed = real_clock, real_elapsed
 
