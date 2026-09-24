@@ -176,9 +176,11 @@ says what it does and what it leaves to the platform.
   desktop on 20 September, vectors and live service included, and CircuitPython
   has not been tried at all. The transport was rebuilt on 21 September, after
   the health check found the old one checking no certificate and following
-  redirects with the key attached, and the new one has not been run under
-  MicroPython: it was driven on CPython against instrumented sockets, and once
-  against the live service. That is what is claimed for it and no more.
+  redirects with the key attached. The new one ran under the unix port of
+  MicroPython 1.25.0 on 24 September, against instrumented sockets, after the
+  same run had shown it could not even raise its own refusals there; it has
+  been driven against the live service once, from CPython. That is what is
+  claimed for it and no more.
 - Nothing is timed. No TLS handshake measured, no certificate chain checked by
   hand on device, no proof of work timed.
 - A signed write from the board is not claimed here. The example constructs one

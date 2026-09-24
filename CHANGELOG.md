@@ -2,6 +2,26 @@
 
 aamio-embedded ships from git and carries no version of its own; entries are dated.
 
+## 2026-09-24, the transport under MicroPython itself
+
+Findings N3, N4 and N5 of the health check of 21 September 2026, each with a
+test that failed before the fix, and the portable suite run under the unix
+port of MicroPython 1.25.0 for the first time since the transport was rebuilt.
+
+- **N3, the error classes could not be created on MicroPython.** `HttpError`
+  called `Exception.__init__`, which MicroPython's type object does not have,
+  so every refusal, redirect and oversize answer raised `AttributeError`
+  instead, and the portable suite stopped at its first redirect under the real
+  thing. `super().__init__` now, which both runtimes have.
+- **N4, the headers had no clock.** The whole-answer clock started with the
+  body, so a peer that dripped one header byte inside every socket wait held
+  the device for as long as it liked. The clock starts at the first byte of
+  the answer and runs through headers and body.
+- **N5, an answer that ended early was taken.** A Content-Length of 999 with
+  39 bytes of JSON that parsed was taken as complete, and the cursor moved. A
+  connection that closes with body still owed is refused, and so is a
+  Content-Length below zero.
+
 ## 2026-09-21, six findings from the deep health check
 
 The deep health check of 21 September 2026 reproduced six faults here, two of them

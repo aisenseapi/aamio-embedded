@@ -98,8 +98,9 @@ http = aamio_http.Http(aamio_http.Tls(open("isrgrootx1.der", "rb").read()))
 ```
 
 `Tls` has been driven on CPython against instrumented socket and TLS modules,
-and once against the live service with the root from a verified chain. It has
-not been run under MicroPython itself.
+and once against the live service with the root from a verified chain. The same
+checks ran under the unix port of MicroPython 1.25.0 on 24 September 2026, with
+the sockets instrumented, not against the live service; a board has not run it.
 
 **CircuitPython** needs `adafruit_requests`, which needs a socket pool and an SSL
 context, which need the board's own radio. That cannot be built here, so build it

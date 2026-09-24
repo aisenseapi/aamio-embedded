@@ -184,6 +184,71 @@ def run(check):
     check(http.read(session) == '{"exists":true,"messages":[],"next":1}',
           "an answer with no Content-Length is read to the end")
 
+    # N5 of the health check of 21 September 2026: Content-Length said 999, the
+    # connection ended after 39 bytes of JSON that parsed, and the answer was
+    # taken and the cursor moved.
+    session = _session(40)
+    sockets = fakes.Sockets([b"HTTP/1.1 200 OK\r\nContent-Length: 999\r\n\r\n" + b'{"exists":true,"messages":[],"next":41}'])
+    http = aamio_http.Http(aamio_http.Tls(b"DER", sockets=sockets, tls=fakes.TlsModule()))
+
+    try:
+        session.take_answer(http.read(session))
+        check(False, "an answer that ended before its Content-Length was taken")
+    except OSError:
+        check(session.after == 40 and sockets.sockets[0].closed,
+              "an answer that ends before its Content-Length is refused, the socket closed and the cursor unmoved")
+
+    sockets = fakes.Sockets([b"HTTP/1.1 200 OK\r\nContent-Length: -5\r\n\r\n{}"])
+    http = aamio_http.Http(aamio_http.Tls(b"DER", sockets=sockets, tls=fakes.TlsModule()))
+
+    try:
+        http.read(session)
+        check(False, "a Content-Length below zero was taken")
+    except OSError:
+        check(sockets.sockets[0].closed, "and a Content-Length below zero is refused")
+
+    # N4 of the same check: the clock started with the body, and a peer that
+    # dripped one header byte inside every socket wait held the device for as
+    # long as it liked. The clock is faked, so the wait is not real.
+    print("one clock from the first byte")
+
+    class Drip(fakes.Socket):
+        reads = 0
+
+        def read(self, size):
+            Drip.reads += 1
+            clock[0] += 0.009
+
+            return fakes.Socket.read(self, 1)
+
+    class DripSockets(fakes.Sockets):
+        def socket(self, family, kind, proto):
+            made = Drip(self, family, kind, proto)
+            made.served = self.answers.pop(0)
+            self.sockets.append(made)
+
+            return made
+
+    clock = [0.0]
+    real_clock, real_elapsed = aamio_http._clock, aamio_http._elapsed
+    aamio_http._clock = lambda: clock[0]
+    aamio_http._elapsed = lambda since: clock[0] - since
+    sockets = DripSockets([fakes.http_answer(200, '{"exists":true,"messages":[],"next":41}')])
+    session = _session(40)
+
+    try:
+        http = aamio_http.Http(aamio_http.Tls(b"DER", sockets=sockets, tls=fakes.TlsModule()), timeout=0.010)
+
+        try:
+            session.take_answer(http.read(session))
+            check(False, "headers that dripped in past the timeout were waited for")
+        except OSError:
+            check(Drip.reads <= 4 and clock[0] < 0.05 and session.after == 40 and sockets.sockets[0].closed,
+                  "headers that drip in past the timeout are given up on within it: %d reads, %.3f s, cursor unmoved, closed"
+                  % (Drip.reads, clock[0]))
+    finally:
+        aamio_http._clock, aamio_http._elapsed = real_clock, real_elapsed
+
     sockets = fakes.Sockets([b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n{\"a\":\r\n0\r\n\r\n"])
     http = aamio_http.Http(aamio_http.Tls(b"DER", sockets=sockets, tls=fakes.TlsModule()))
 

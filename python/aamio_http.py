@@ -112,7 +112,11 @@ class HttpError(Exception):
     """A status this module will not decide about on the caller's behalf."""
 
     def __init__(self, status, text):
-        Exception.__init__(self, "aamio answered %d: %s" % (status, text[:200]))
+        # super(), not Exception.__init__: MicroPython has no __init__ on the
+        # type object, so the old form raised AttributeError in place of every
+        # refusal, and the portable suite stopped at its first redirect under
+        # the real thing. Finding N3 of the health check of 21 September 2026.
+        super().__init__("aamio answered %d: %s" % (status, text[:200]))
         self.status = status
         self.text = text
 
@@ -167,11 +171,20 @@ def _collect(answer, status, ceiling, timeout):
     failure the ceiling is there to prevent. Each wait on the socket has the
     transport's timeout; the clock here is the whole answer's, since a peer that
     sends one byte inside every timeout would otherwise hold the device for as
-    long as it liked.
+    long as it liked. It runs from the answer's first byte where the transport
+    says when that was, as `Tls` does: measured from the body alone, a peer
+    could drip the headers for as long as it liked first. N4 of the same check.
     """
     parts = []
     got = 0
-    started = _clock()
+
+    try:
+        started = answer.started
+    except AttributeError:
+        started = None
+
+    if started is None:
+        started = _clock()
 
     for piece in answer.iter_content(chunk_size=CHUNK):
         got += len(piece)
@@ -272,7 +285,8 @@ class Tls:
 
     Needs `SSLContext`, which MicroPython has had since 1.23. Runs on CPython as
     well, over `ssl`, which is where the tests drive it against instrumented
-    sockets. It has not been run under MicroPython itself.
+    sockets. The same checks ran under the unix port of MicroPython 1.25.0 on 24
+    September 2026; a board has not run it.
 
     `sockets` and `tls` stand in for the `socket` and `tls` modules, for a runtime
     that keeps them under another name, and for the tests.
@@ -282,11 +296,12 @@ class Tls:
     HEADER_BYTES = 4096
 
     class _Answer:
-        def __init__(self, status, sock, first, length):
+        def __init__(self, status, sock, first, length, started=None):
             self.status_code = status
             self.sock = sock
             self.first = first     # body bytes that arrived with the headers
             self.left = length     # what Content-Length promised, or None
+            self.started = started  # when the first byte of the answer arrived
 
         def iter_content(self, chunk_size=CHUNK):
             piece = self.first
@@ -306,6 +321,12 @@ class Tls:
                 piece = self.sock.read(chunk_size)
 
                 if not piece:
+                    # The end, when nothing was promised. With a Content-Length
+                    # still owed it is a connection that broke, and an answer
+                    # that happens to parse is not one to believe. N5.
+                    if self.left:
+                        raise OSError("the connection closed with %d bytes of the body still to come" % self.left)
+
                     return
 
         def close(self):
@@ -350,14 +371,18 @@ class Tls:
             sock.close()
             raise
 
-    def _head(self, sock):
-        """The status, what Content-Length promised, and the body bytes that came along.
+    def _head(self, sock, timeout=None):
+        """The status, what Content-Length promised, the body bytes that came along, and when the first byte came.
 
         Read a piece at a time rather than a line at a time, since a line at a
         time is not on every socket; whatever follows the blank line is the start
-        of the body and is handed to the answer.
+        of the body and is handed to the answer. The clock starts at the first
+        byte and is the same one the body is read against: each socket wait has
+        its own timeout, and a peer that dripped one header byte inside every
+        wait held the device for as long as it liked.
         """
         got = b""
+        started = None
 
         while True:
             end = got.find(b"\r\n\r\n")
@@ -373,7 +398,13 @@ class Tls:
             if not piece:
                 raise OSError("the connection closed before the headers ended")
 
+            if started is None:
+                started = _clock()
+
             got += piece
+
+            if timeout is not None and _elapsed(started) > timeout:
+                raise OSError("the headers did not arrive within %d seconds" % timeout)
 
         lines = got[:end].split(b"\r\n")
         parts = lines[0].split(None, 2)
@@ -402,12 +433,15 @@ class Tls:
                     length = int(str(value, "utf-8"))
                 except ValueError:
                     raise OSError("a Content-Length that is not a number")
+
+                if length < 0:
+                    raise OSError("a Content-Length below zero")
             elif name == b"transfer-encoding" and b"chunked" in value.lower():
                 # HTTP/1.0 was asked for, and a 1.0 client is never sent chunks.
                 # A peer that does so is not talking to this client.
                 raise OSError("a chunked answer, which this transport does not read")
 
-        return status, got[end + 4:], length
+        return status, got[end + 4:], length, started
 
     def request(self, method, url, headers=None, data=None, timeout=None,
                 allow_redirects=False, stream=True):
@@ -444,12 +478,12 @@ class Tls:
             if data:
                 _write_all(sock, data)
 
-            status, first, length = self._head(sock)
+            status, first, length, started = self._head(sock, timeout)
         except Exception:
             sock.close()
             raise
 
-        return self._Answer(status, sock, first, length)
+        return self._Answer(status, sock, first, length, started)
 
     def get(self, url, **kw):
         return self.request("GET", url, **kw)
